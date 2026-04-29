@@ -28,11 +28,13 @@ jobs:
           fetch-depth: 1 
 
       - name: 🧹 Deep Clean Disk
-        shell: pwsh
+        shell: cmd
         run: |
-          Write-Host "Wiping heavy SDKs to make room for the build..."
-          $junk = @("C:\Program Files\Android", "C:\hostedtoolcache\windows", "C:\Program Files\dotnet", "C:\mysql", "C:\Program Files\Microsoft SQL Server")
-          foreach ($path in $junk) { if (Test-Path $path) { Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue } }
+          if exist "C:\Program Files\Android" rmdir /s /q "C:\Program Files\Android"
+          if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
+          if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
+          if exist "C:\mysql" rmdir /s /q "C:\mysql"
+          if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
 
       - name: 💽 Expand Virtual Memory
         uses: al-cheb/configure-pagefile-action@v1.4
@@ -40,6 +42,11 @@ jobs:
           minimum-size: 16GB
           maximum-size: 32GB 
           disk-root: "C:"
+
+      - name: 🐍 Setup Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: 🩹 Apply Stripping & Parallel Patches
         shell: python
@@ -53,24 +60,15 @@ jobs:
                   with open(path, 'w', encoding='utf-8', newline='\n') as f:
                       f.write(content.replace(old, new))
 
-          # 1. Force Synchronous PDB writing (Prevents parallel build crashes)
           patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS')
-          
-          # 2. Total Stripping: Tell Linker to ignore debug info and PDB generation
           patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE')
           patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)')
 
-          # 3. Fix prepare.py stability issues
           prep = 'Telegram/build/prepare/prepare.py'
           patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']")
           patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip')
           patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip')
-
-      - name: 🐍 Setup Environment
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
+          
       - name: 🛠️ Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
