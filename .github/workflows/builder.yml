@@ -34,6 +34,12 @@ jobs:
           if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
           if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
           if exist "C:\mysql" rmdir /s /q "C:\mysql"
+          
+          :: Stop SQL Server processes locking the files so we can safely delete them
+          net stop SQLWriter 2>nul
+          taskkill /F /IM sqlwriter.exe /T 2>nul
+          taskkill /F /IM sqlservr.exe /T 2>nul
+          
           if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
 
       - name: 💽 Expand Virtual Memory
@@ -53,31 +59,38 @@ jobs:
         run: |
           import os
 
-          def patch(path, old, new):
-              if not os.path.exists(path): return
+          def patch(path, old, new, desc):
+              if not os.path.exists(path): 
+                  print(f"❌ [SKIPPED] File not found: {path}")
+                  return
+              
               with open(path, 'r', encoding='utf-8') as f: content = f.read()
+              
               if old in content:
                   with open(path, 'w', encoding='utf-8', newline='\n') as f:
                       f.write(content.replace(old, new))
+                  print(f"✅ [SUCCESS] {desc}")
+              elif new in content:
+                  print(f"⚡ [ALREADY APPLIED] {desc}")
+              else:
+                  print(f"⚠️ [WARNING] Target text not found: {desc}")
 
-          # Strip Telegram desktop debug symbols
-          patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS')
-          patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE')
-          patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)')
+          print("--- Stripping Telegram Debug Symbols ---")
+          patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS', 'Enable /FS flag with /MP')
+          patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE', 'Disable MSVC Debug Symbols (/DEBUG:NONE)')
+          patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)', 'Clear MSVC Debug Info Format')
 
-          # Patch prepare.py to skip dependency debug builds dynamically
+          print("\n--- Patching prepare.py for Release-Only Builds ---")
           prep = 'Telegram/build/prepare/prepare.py'
-          patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']")
-          patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip')
-          patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip')
-          
-          # Force Qt and CMake dependencies to skip Debug
-          patch(prep, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release')
-          patch(prep, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release')
-          patch(prep, 'cmake --build . --config Debug', 'echo Skipping Debug build...')
-          patch(prep, 'cmake --build out --config Debug', 'echo Skipping Debug build...')
-          patch(prep, 'cmake --install . --config Debug', 'echo Skipping Debug install...')
-          
+          patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']", 'Fix QT env variable access')
+          patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip', 'Skip OpenSSL PDB move')
+          patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip', 'Skip OpenSSL static move')
+          patch(prep, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release', 'Force Qt Release mode (Windows)')
+          patch(prep, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release', 'Force Qt Release mode (Unix)')
+          patch(prep, 'cmake --build . --config Debug', 'echo Skipping Debug build...', 'Skip CMake Debug builds (.)')
+          patch(prep, 'cmake --build out --config Debug', 'echo Skipping Debug build...', 'Skip CMake Debug builds (out)')
+          patch(prep, 'cmake --install . --config Debug', 'echo Skipping Debug install...', 'Skip CMake Debug installs')
+
       - name: 🛠️ Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -102,11 +115,24 @@ jobs:
         shell: cmd
         run: cmake --build out --config Release --target Telegram --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: 🏷️ Rename Binary
+      - name: 🏷️ Check Version & Rename Binary
         shell: pwsh
         run: |
-          if (Test-Path "out\Release\Telegram.exe") {
-              Move-Item "out\Release\Telegram.exe" "out\Release\AyuGram.exe"
+          $exePath = "out\Release\Telegram.exe"
+          
+          if (Test-Path $exePath) {
+              # Extract the version metadata from the compiled exe
+              $ver = (Get-Item $exePath).VersionInfo.FileVersion
+              
+              Write-Host "========================================="
+              Write-Host "🎉 SUCCESS! Built AyuGram Version: $ver"
+              Write-Host "========================================="
+              
+              Move-Item $exePath "out\Release\AyuGram.exe"
+              Write-Host "✅ Binary successfully renamed to AyuGram.exe"
+          } else {
+              Write-Error "❌ Build failed or Telegram.exe not found!"
+              exit 1
           }
 
       - name: 📤 Upload Result
