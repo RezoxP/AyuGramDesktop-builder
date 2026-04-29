@@ -1,0 +1,110 @@
+name: AyuGram Personal Stripped Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'dev'
+
+env:
+  TDESKTOP_API_ID: "2040"
+  TDESKTOP_API_HASH: "b18441a1ff607e10a989891a5462e627"
+
+jobs:
+  build:
+    name: Production Build (Stripped)
+    runs-on: windows-2022
+    timeout-minutes: 240 
+
+    steps:
+      - name: 📥 Fast Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: AyuGram/AyuGramDesktop
+          ref: ${{ github.event.inputs.branch }}
+          submodules: recursive
+          fetch-depth: 1 
+
+      - name: 🧹 Deep Clean Disk
+        shell: pwsh
+        run: |
+          Write-Host "Wiping heavy SDKs to make room for the build..."
+          $junk = @("C:\Program Files\Android", "C:\hostedtoolcache\windows", "C:\Program Files\dotnet", "C:\mysql", "C:\Program Files\Microsoft SQL Server")
+          foreach ($path in $junk) { if (Test-Path $path) { Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue } }
+
+      - name: 💽 Expand Virtual Memory
+        uses: al-cheb/configure-pagefile-action@v1.4
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB 
+          disk-root: "C:"
+
+      - name: 🩹 Apply Stripping & Parallel Patches
+        shell: python
+        run: |
+          import os
+
+          def patch(path, old, new):
+              if not os.path.exists(path): return
+              with open(path, 'r', encoding='utf-8') as f: content = f.read()
+              if old in content:
+                  with open(path, 'w', encoding='utf-8', newline='\n') as f:
+                      f.write(content.replace(old, new))
+
+          # 1. Force Synchronous PDB writing (Prevents parallel build crashes)
+          patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS')
+          
+          # 2. Total Stripping: Tell Linker to ignore debug info and PDB generation
+          patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE')
+          patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)')
+
+          # 3. Fix prepare.py stability issues
+          prep = 'Telegram/build/prepare/prepare.py'
+          patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']")
+          patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip')
+          patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip')
+
+      - name: 🐍 Setup Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 🛠️ Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 📦 Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ../Libraries
+            ../ThirdParty
+          key: ${{ runner.os }}-ayu-personal-${{ hashFiles('Telegram/build/prepare/prepare.py') }}
+          restore-keys: ${{ runner.os }}-ayu-personal-
+
+      - name: ⚙️ Prepare & Configure
+        shell: cmd
+        run: |
+          call Telegram\build\prepare\win.bat skip-debug
+          call Telegram\configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH%
+
+      - name: 🚀 Build (Parallelized)
+        shell: cmd
+        run: cmake --build out --config Release --target Telegram --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: 🏷️ Rename Binary
+        shell: pwsh
+        run: |
+          if (Test-Path "out\Release\Telegram.exe") {
+              Move-Item "out\Release\Telegram.exe" "out\Release\AyuGram.exe"
+          }
+
+      - name: 📤 Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Stripped-Win64
+          path: out/Release/AyuGram.exe
+          compression-level: 9
