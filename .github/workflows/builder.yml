@@ -62,6 +62,7 @@ jobs:
         run: |
           import os
           import sys
+          import re
           
           # Force Windows to output UTF-8 so our emojis don't crash the runner
           sys.stdout.reconfigure(encoding='utf-8')
@@ -82,16 +83,32 @@ jobs:
               else:
                   print(f"⚠️ [WARNING] Target text not found: {desc}")
 
+          # NEW: Regex patch function
+          def patch_regex(path, pattern, new, desc):
+              if not os.path.exists(path): return
+              with open(path, 'r', encoding='utf-8') as f: content = f.read()
+              
+              new_content, count = re.subn(pattern, new, content)
+              if count > 0:
+                  with open(path, 'w', encoding='utf-8', newline='\n') as f:
+                      f.write(new_content)
+                  print(f"✅ [SUCCESS] {desc}")
+              else:
+                  print(f"⚠️ [WARNING] Pattern not found: {desc}")
+
           print("--- Stripping Telegram Debug Symbols ---")
           patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS', 'Enable /FS flag with /MP')
-          patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE', 'Disable MSVC Debug Symbols (/DEBUG:NONE)')
+          
+          # FIX: Use regex to prevent turning /DEBUG:NONE into /DEBUG:NONE:NONE
+          patch_regex('cmake/options_win.cmake', r'/DEBUG(?!\:NONE)', '/DEBUG:NONE', 'Disable MSVC Debug Symbols (/DEBUG:NONE)')
+          
           patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)', 'Clear MSVC Debug Info Format')
 
           print("\n--- Patching prepare.py for Release-Only Builds ---")
           prep = 'Telegram/build/prepare/prepare.py'
           patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']", 'Fix QT env variable access')
-          patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip', 'Skip OpenSSL PDB move')
-          patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip', 'Skip OpenSSL static move')
+          patch(prep, 'move out.dbg\\ossl_static.pdb', 'if exist out.dbg echo skip', 'Skip OpenSSL PDB move')
+          patch(prep, 'move out.dbg\\ossl_static', 'if exist out.dbg echo skip', 'Skip OpenSSL static move')
           patch(prep, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release', 'Force Qt Release mode (Windows)')
           patch(prep, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release', 'Force Qt Release mode (Unix)')
           patch(prep, 'cmake --build . --config Debug', 'echo Skipping Debug build...', 'Skip CMake Debug builds (.)')
