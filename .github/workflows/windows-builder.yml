@@ -168,9 +168,7 @@ jobs:
         shell: bash
         run: |
           cd "$TBUILD/$REPO_NAME"
-          sed -n "/^@'$/,/^'@/{/^@'$/d;/^'@/d;p;}" docs/building-win-x64.md > pdb_fix.patch
-          git -C cmake apply ../pdb_fix.patch || echo "PDB fix patch already applied or not needed"
-          rm -f pdb_fix.patch
+          git -C cmake apply ../.github/patches/pdb-fix-release.patch || echo "PDB fix patch already applied or not needed"
 
       - name: AyuGram Desktop build.
         run: |
