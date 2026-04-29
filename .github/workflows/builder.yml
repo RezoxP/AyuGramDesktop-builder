@@ -35,12 +35,15 @@ jobs:
           if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
           if exist "C:\mysql" rmdir /s /q "C:\mysql"
           
-          :: Stop SQL Server processes locking the files so we can safely delete them
-          net stop SQLWriter 2>nul
-          taskkill /F /IM sqlwriter.exe /T 2>nul
-          taskkill /F /IM sqlservr.exe /T 2>nul
+          :: Stop SQL Server processes locking the files
+          net stop SQLWriter 2>nul || ver >nul
+          taskkill /F /IM sqlwriter.exe /T 2>nul || ver >nul
+          taskkill /F /IM sqlservr.exe /T 2>nul || ver >nul
           
           if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
+          
+          :: Force the step to report success regardless of process exit codes
+          exit /b 0
 
       - name: 💽 Expand Virtual Memory
         uses: al-cheb/configure-pagefile-action@v1.4
