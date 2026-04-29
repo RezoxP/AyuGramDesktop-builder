@@ -60,14 +60,23 @@ jobs:
                   with open(path, 'w', encoding='utf-8', newline='\n') as f:
                       f.write(content.replace(old, new))
 
+          # Strip Telegram desktop debug symbols
           patch('cmake/options_win.cmake', '/MP      # Enable multi process build.', '/MP\n        /FS')
           patch('cmake/options_win.cmake', '/DEBUG', '/DEBUG:NONE')
           patch('cmake/variables.cmake', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")', 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)')
 
+          # Patch prepare.py to skip dependency debug builds dynamically
           prep = 'Telegram/build/prepare/prepare.py'
           patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']")
           patch(prep, 'move out.dbg\\\\ossl_static.pdb', 'if exist out.dbg echo skip')
           patch(prep, 'move out.dbg\\\\ossl_static', 'if exist out.dbg echo skip')
+          
+          # Force Qt and CMake dependencies to skip Debug
+          patch(prep, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release')
+          patch(prep, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release')
+          patch(prep, 'cmake --build . --config Debug', 'echo Skipping Debug build...')
+          patch(prep, 'cmake --build out --config Debug', 'echo Skipping Debug build...')
+          patch(prep, 'cmake --install . --config Debug', 'echo Skipping Debug install...')
           
       - name: 🛠️ Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -86,7 +95,7 @@ jobs:
       - name: ⚙️ Prepare & Configure
         shell: cmd
         run: |
-          call Telegram\build\prepare\win.bat skip-debug
+          call Telegram\build\prepare\win.bat
           call Telegram\configure.bat x64 -D TDESKTOP_API_ID=%TDESKTOP_API_ID% -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH%
 
       - name: 🚀 Build (Parallelized)
