@@ -164,6 +164,14 @@ jobs:
               -o -empty \
             ')' -delete
 
+      - name: Apply PDB fix for Release build.
+        shell: bash
+        run: |
+          cd "$TBUILD/$REPO_NAME"
+          sed -n "/^@'$/,/^'@/{/^@'$/d;/^'@/d;p;}" docs/building-win-x64.md > pdb_fix.patch
+          git -C cmake apply ../pdb_fix.patch || echo "PDB fix patch already applied or not needed"
+          rm -f pdb_fix.patch
+
       - name: AyuGram Desktop build.
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
