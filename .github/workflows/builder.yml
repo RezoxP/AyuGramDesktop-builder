@@ -139,23 +139,27 @@ jobs:
         shell: cmd
         run: cmake --build out --config Release --target Telegram --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: 🏷️ Check Version & Rename Binary
+      - name: 🏷️ Check Version & Ensure Binary Exists
         shell: pwsh
         run: |
-          $exePath = "out\Release\Telegram.exe"
+          $expectedExe = "out\Release\AyuGram.exe"
+          $altExe = "out\Release\Telegram.exe"
           
-          if (Test-Path $exePath) {
+          # If it compiled as Telegram.exe, rename it just to be safe
+          if (Test-Path $altExe) {
+              Move-Item $altExe $expectedExe
+              Write-Host "✅ Binary renamed from Telegram.exe to AyuGram.exe"
+          }
+          
+          if (Test-Path $expectedExe) {
               # Extract the version metadata from the compiled exe
-              $ver = (Get-Item $exePath).VersionInfo.FileVersion
+              $ver = (Get-Item $expectedExe).VersionInfo.FileVersion
               
               Write-Host "========================================="
               Write-Host "🎉 SUCCESS! Built AyuGram Version: $ver"
               Write-Host "========================================="
-              
-              Move-Item $exePath "out\Release\AyuGram.exe"
-              Write-Host "✅ Binary successfully renamed to AyuGram.exe"
           } else {
-              Write-Error "❌ Build failed or Telegram.exe not found!"
+              Write-Error "❌ Build failed: AyuGram.exe not found!"
               exit 1
           }
 
@@ -163,5 +167,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AyuGram-Stripped-Win64
-          path: out/Release/AyuGram.exe
+          path: |
+            out/Release/AyuGram.exe
+            out/Release/Updater.exe
+            out/Release/modules/
           compression-level: 9
