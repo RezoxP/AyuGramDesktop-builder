@@ -194,9 +194,10 @@ jobs:
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
-            -D DESKTOP_APP_ENABLE_LTO=ON
+            -D DESKTOP_APP_ENABLE_LTO=ON ^
+            -D CMAKE_CXX_FLAGS="/Zm200"
 
-          cmake --build ..\out --config Release --parallel
+          cmake --build ..\out --config Release --parallel 2
 
       - name: Move artifact.
         run: |
