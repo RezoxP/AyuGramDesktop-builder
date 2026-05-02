@@ -63,24 +63,6 @@ jobs:
       - name: Checkout builder repo.
         uses: actions/checkout@v4
 
-      - name: 🧹 Deep Clean Disk
-        shell: cmd
-        run: |
-          if exist "C:\Program Files\Android" rmdir /s /q "C:\Program Files\Android"
-          if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
-          if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
-          if exist "C:\mysql" rmdir /s /q "C:\mysql"
-
-          :: Stop SQL Server processes locking the files
-          net stop SQLWriter 2>nul || ver >nul
-          taskkill /F /IM sqlwriter.exe /T 2>nul || ver >nul
-          taskkill /F /IM sqlservr.exe /T 2>nul || ver >nul
-
-          if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
-
-          :: Force the step to report success regardless of process exit codes
-          exit /b 0
-
       - name: 💽 Expand Virtual Memory
         uses: al-cheb/configure-pagefile-action@v1.4
         with:
@@ -170,6 +152,11 @@ jobs:
             ${{ env.LibrariesPath }}/cache_keys/[qQ]t[_-]*
           key: ${{ runner.OS }}-x64-qt-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-x64-qt-
+
+      - name: Setup Python.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Libraries.
         env:
