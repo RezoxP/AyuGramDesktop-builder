@@ -63,6 +63,31 @@ jobs:
       - name: Checkout builder repo.
         uses: actions/checkout@v4
 
+      - name: 🧹 Deep Clean Disk
+        shell: cmd
+        run: |
+          if exist "C:\Program Files\Android" rmdir /s /q "C:\Program Files\Android"
+          if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
+          if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
+          if exist "C:\mysql" rmdir /s /q "C:\mysql"
+
+          :: Stop SQL Server processes locking the files
+          net stop SQLWriter 2>nul || ver >nul
+          taskkill /F /IM sqlwriter.exe /T 2>nul || ver >nul
+          taskkill /F /IM sqlservr.exe /T 2>nul || ver >nul
+
+          if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
+
+          :: Force the step to report success regardless of process exit codes
+          exit /b 0
+
+      - name: 💽 Expand Virtual Memory
+        uses: al-cheb/configure-pagefile-action@v1.4
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: "C:"
+
       - name: Prepare directories.
         run: |
           mkdir %userprofile%\TBuild\Libraries
@@ -194,8 +219,7 @@ jobs:
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
-            -D DESKTOP_APP_ENABLE_LTO=ON ^
-            -D CMAKE_CXX_FLAGS="/Zm200"
+            -D DESKTOP_APP_ENABLE_LTO=ON
 
           cmake --build ..\out --config Release --parallel 2
 
