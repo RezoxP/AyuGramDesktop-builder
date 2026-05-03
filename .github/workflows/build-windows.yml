@@ -157,26 +157,28 @@ jobs:
       - name: Free up disk space.
         shell: bash
         run: |
-          find $LibrariesPath \
-            '(' \
+          if [ -d "$LibrariesPath" ]; then
+            find $LibrariesPath \
               '(' \
-                ! '(' \
-                  -name '*.lib' \
-                  -o -name '*.a' \
-                  -o -name '*.exe' \
-                  -o -name '*.h' \
-                  -o -name '*.hpp' \
-                  -o -name '*.inc' \
-                  -o -name '*.cmake' \
-                  -o -path '*/include/*' \
-                  -o -path '*/objects-*' \
-                  -o -path '*/cache_keys/*' \
-                  -o -path '*/patches/*' \
+                '(' \
+                  ! '(' \
+                    -name '*.lib' \
+                    -o -name '*.a' \
+                    -o -name '*.exe' \
+                    -o -name '*.h' \
+                    -o -name '*.hpp' \
+                    -o -name '*.inc' \
+                    -o -name '*.cmake' \
+                    -o -path '*/include/*' \
+                    -o -path '*/objects-*' \
+                    -o -path '*/cache_keys/*' \
+                    -o -path '*/patches/*' \
+                  ')' \
+                  -type f \
                 ')' \
-                -type f \
-              ')' \
-              -o -empty \
-            ')' -delete
+                -o -empty \
+              ')' -delete
+          fi
 
       - name: Apply PDB fix for Release build.
         shell: bash
