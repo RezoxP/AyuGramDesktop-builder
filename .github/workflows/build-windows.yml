@@ -1,0 +1,250 @@
+name: Build Windows (x64 & x86)
+
+on:
+  push:
+    branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'Changelog.txt'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'Changelog.txt'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'AyuGram branch to build'
+        required: true
+        default: 'dev'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+        include:
+          - arch: x64
+            configure_arch: x64
+          - arch: x86
+            configure_arch: x86
+
+    env:
+      TDESKTOP_API_ID: "2040"
+      TDESKTOP_API_HASH: "b18441a1ff607e10a989891a5462e627"
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Checkout builder repo.
+        uses: actions/checkout@v4
+
+      - name: Expand virtual memory.
+        uses: al-cheb/configure-pagefile-action@v1.4
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: "C:"
+
+      - name: Prepare directories.
+        run: |
+          mkdir %userprofile%\TBuild\Libraries
+          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\${{ matrix.arch }}>>%GITHUB_ENV%
+
+      - name: Get repository name.
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone AyuGramDesktop.
+        uses: actions/checkout@v4
+        with:
+          repository: AyuGram/AyuGramDesktop
+          ref: ${{ github.event.inputs.branch || 'dev' }}
+          submodules: recursive
+          path: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
+
+      - name: Read version.
+        shell: bash
+        run: |
+          VERSION=$(grep 'AppVersionStr ' $TBUILD/$REPO_NAME/Telegram/build/version | awk '{ print $2 }')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected version: $VERSION"
+
+      - name: First set up.
+        shell: bash
+        run: |
+          SDK="10.0.26100.0"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
+            "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+          git config --global user.email "AyuGramBuilder@users.noreply.github.com"
+          git config --global user.name "AyuGram CI"
+
+      - name: Native Tools Command Prompt.
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: ${{ matrix.arch }}
+          sdk: ${{ env.SDK }}
+
+      - name: NuGet sources.
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: ThirdParty cache.
+        id: cache-third-party
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.TBUILD }}/ThirdParty
+          key: ${{ runner.OS }}-${{ matrix.arch }}-third-party-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-third-party-
+
+      - name: Libraries cache.
+        id: cache-libs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.LibrariesPath }}/*
+            !${{ env.LibrariesPath }}/cache_keys
+            !${{ env.LibrariesPath }}/[qQ]t[_-]*
+            ${{ env.LibrariesPath }}/cache_keys/*
+            !${{ env.LibrariesPath }}/cache_keys/[qQ]t[_-]*
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-
+
+      - name: Qt cache.
+        id: cache-qt
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ env.LibrariesPath }}/[qQ]t[_-]*
+            ${{ env.LibrariesPath }}/cache_keys/[qQ]t[_-]*
+          key: ${{ runner.OS }}-${{ matrix.arch }}-qt-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-qt-
+
+      - name: Setup Python.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Libraries.
+        env:
+          GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
+          GYP_MSVS_VERSION: 2022
+        run: |
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
+
+      - name: Free up disk space.
+        shell: bash
+        run: |
+          find $LibrariesPath \
+            '(' \
+              '(' \
+                ! '(' \
+                  -name '*.lib' \
+                  -o -name '*.a' \
+                  -o -name '*.exe' \
+                  -o -name '*.h' \
+                  -o -name '*.hpp' \
+                  -o -name '*.inc' \
+                  -o -name '*.cmake' \
+                  -o -path '*/include/*' \
+                  -o -path '*/objects-*' \
+                  -o -path '*/cache_keys/*' \
+                  -o -path '*/patches/*' \
+                ')' \
+                -type f \
+              ')' \
+              -o -empty \
+            ')' -delete
+
+      - name: Apply PDB fix for Release build.
+        shell: bash
+        run: |
+          cd "$TBUILD/$REPO_NAME"
+          git -C cmake apply "$GITHUB_WORKSPACE/.github/patches/pdb-fix-release.patch" || echo "PDB fix patch already applied or not needed"
+
+      - name: Patch updater URL to use this repo releases.
+        shell: python
+        run: |
+          import os
+          repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
+          update_url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
+          tbuild = os.environ["TBUILD"]
+          repo_name = os.environ["REPO_NAME"]
+          target = os.path.join(tbuild, repo_name, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
+          with open(target, "r", encoding="utf-8") as f:
+              content = f.read()
+          content = content.replace(
+              'return AutoupdatePrefix("https://update.ayugram.one/");',
+              f'return AutoupdatePrefix("{update_url}");'
+          )
+          content = content.replace(
+              'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
+              f'const auto fixedPrefix = QString::fromStdString("{update_url}");'
+          )
+          with open(target, "w", encoding="utf-8", newline="\n") as f:
+              f.write(content)
+          print(f"Patched update URL to: {update_url}")
+
+      - name: Build AyuGram Desktop.
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+
+          call configure.bat ^
+            ${{ matrix.configure_arch }} ^
+            -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
+            -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
+            -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+
+          cmake --build ..\out --config Release --parallel 2
+
+      - name: Move artifact.
+        run: |
+          set "OUT=%TBUILD%\%REPO_NAME%\out\Release"
+          mkdir artifact
+          move "%OUT%\Telegram.exe" artifact\ 2>nul || move "%OUT%\AyuGram.exe" artifact\ 2>nul
+          move "%OUT%\Updater.exe" artifact\ 2>nul
+          if exist "%OUT%\modules" (
+            xcopy "%OUT%\modules" artifact\modules\ /E /I /Y
+          )
+
+      - name: Strip debug symbols from binaries.
+        shell: pwsh
+        run: |
+          $artifact = "artifact"
+          Get-ChildItem "$artifact\*.pdb" -Recurse | Remove-Item -Force
+          Get-ChildItem "$artifact\*.ilk" -Recurse | Remove-Item -Force
+
+      - name: Package zip.
+        shell: pwsh
+        run: |
+          Compress-Archive -Path artifact\* -DestinationPath "AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}.zip"
+
+      - name: Upload artifact.
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}
+          path: artifact/
