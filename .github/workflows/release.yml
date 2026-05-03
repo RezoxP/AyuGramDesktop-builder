@@ -305,11 +305,6 @@ jobs:
           sed -i "s|https://update.ayugram.one/|${UPDATE_URL}|g" "$TARGET"
           echo "Patched update URL to: ${UPDATE_URL}"
 
-      - name: Prepare Docker image.
-        run: |
-          cd tdesktop
-          ./Telegram/build/prepare/linux.sh
-
       - name: Build AyuGram (Docker).
         run: |
           cd tdesktop

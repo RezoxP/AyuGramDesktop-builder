@@ -75,11 +75,6 @@ jobs:
           echo "Patched update URL to: ${UPDATE_URL}"
           grep -n "AutoupdatePrefix" "$TARGET" | head -5
 
-      - name: Prepare Docker image.
-        run: |
-          cd tdesktop
-          ./Telegram/build/prepare/linux.sh
-
       - name: Build AyuGram (Docker).
         run: |
           cd tdesktop
