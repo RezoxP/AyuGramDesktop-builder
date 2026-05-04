@@ -14,7 +14,6 @@ permissions:
 env:
   TDESKTOP_API_ID: "2040"
   TDESKTOP_API_HASH: "b18441a1ff607e10a989891a5462e627"
-  PREPARE_PATH: "Telegram/build/prepare/prepare.py"
 
 jobs:
 
@@ -33,10 +32,10 @@ jobs:
         shell: cmd
 
     steps:
-      - name: Checkout builder repo.
+      - name: Checkout builder repo
         uses: actions/checkout@v4
 
-      - name: Deep clean disk.
+      - name: Clean disk
         run: |
           if exist "C:\Program Files\Android" rmdir /s /q "C:\Program Files\Android"
           if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
@@ -48,77 +47,77 @@ jobs:
           if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
           exit /b 0
 
-      - name: Expand virtual memory.
+      - name: Expand virtual memory
         uses: al-cheb/configure-pagefile-action@v1.4
         with:
           minimum-size: 16GB
           maximum-size: 32GB
           disk-root: "C:"
 
-      - name: Prepare directories.
-        run: |
-          mkdir %userprofile%\TBuild\Libraries
-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
-          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
-          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\${{ matrix.arch }}>>%GITHUB_ENV%
-
-      - name: Get repository name.
-        shell: bash
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
-
-      - name: Clone AyuGramDesktop.
-        uses: actions/checkout@v4
-        with:
-          repository: AyuGram/AyuGramDesktop
-          ref: ${{ github.event.inputs.branch }}
-          submodules: recursive
-          path: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
-
-      - name: Read version.
+      - name: Setup environment
         shell: bash
         run: |
-          VERSION=$(grep 'AppVersionStr ' $TBUILD/$REPO_NAME/Telegram/build/version | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' $TBUILD/$REPO_NAME/Telegram/build/version | awk '{ print $2 }')
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
 
-      - name: First set up.
-        shell: bash
-        run: |
+          mkdir -p "$USERPROFILE/TBuild/Libraries"
+          echo "TBUILD=$GITHUB_WORKSPACE/TBuild" >> $GITHUB_ENV
+          echo "LibrariesPath=$GITHUB_WORKSPACE/TBuild/Libraries/${{ matrix.arch }}" >> $GITHUB_ENV
+
           SDK="10.0.26100.0"
           echo "SDK=$SDK" >> $GITHUB_ENV
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
             "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
 
-          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
-          echo "$SDK" >> CACHE_KEY.txt
-          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
-
           git config --global user.email "AyuGramBuilder@users.noreply.github.com"
           git config --global user.name "AyuGram CI"
 
-      - name: Native Tools Command Prompt.
+      - name: Create TBuild symlink
+        run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+
+      - name: Clone AyuGramDesktop
+        uses: actions/checkout@v4
+        with:
+          repository: AyuGram/AyuGramDesktop
+          ref: ${{ github.event.inputs.branch }}
+          submodules: recursive
+          fetch-depth: 1
+          path: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
+
+      - name: Read version
+        shell: bash
+        run: |
+          VFILE="$TBUILD/$REPO_NAME/Telegram/build/version"
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+
+          PREP="$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
+          echo "$(sha256sum "$PREP" | awk '{ print $1 }')" > CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+      - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.arch }}
           sdk: ${{ env.SDK }}
 
-      - name: NuGet sources.
+      - name: NuGet sources
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
-      - name: ThirdParty cache.
-        id: cache-third-party
+      - name: ThirdParty cache
         uses: actions/cache@v5
         with:
           path: ${{ env.TBUILD }}/ThirdParty
           key: ${{ runner.OS }}-${{ matrix.arch }}-third-party-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-third-party-
 
-      - name: Libraries cache.
-        id: cache-libs
+      - name: Libraries cache
         uses: actions/cache@v5
         with:
           path: |
@@ -130,8 +129,7 @@ jobs:
           key: ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-
 
-      - name: Qt cache.
-        id: cache-qt
+      - name: Qt cache
         uses: actions/cache@v5
         with:
           path: |
@@ -140,90 +138,65 @@ jobs:
           key: ${{ runner.OS }}-${{ matrix.arch }}-qt-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-qt-
 
-      - name: Setup Python.
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Apply release patches.
+      - name: Apply patches
         shell: python
         run: |
           import os, sys, re
           sys.stdout.reconfigure(encoding='utf-8')
-          tbuild = os.environ["TBUILD"]
-          repo = os.environ["REPO_NAME"]
-          src = os.path.join(tbuild, repo)
+          src = os.path.join(os.environ["TBUILD"], os.environ["REPO_NAME"])
 
-          def patch(path, old, new, desc):
-              full = os.path.join(src, path) if not os.path.isabs(path) else path
-              if not os.path.exists(full):
-                  print(f"[SKIP] {desc}: file not found")
-                  return
-              with open(full, "r", encoding="utf-8") as f:
-                  content = f.read()
+          def patch(path, old, new):
+              full = os.path.join(src, path)
+              if not os.path.exists(full): return
+              with open(full, "r", encoding="utf-8") as f: content = f.read()
               if old in content:
-                  with open(full, "w", encoding="utf-8", newline="\n") as f:
-                      f.write(content.replace(old, new))
-                  print(f"[OK] {desc}")
-              elif new in content:
-                  print(f"[ALREADY] {desc}")
-              else:
-                  print(f"[WARN] {desc}: target text not found")
+                  with open(full, "w", encoding="utf-8", newline="\n") as f: f.write(content.replace(old, new))
 
-          def patch_regex(path, pattern, new, desc):
-              full = os.path.join(src, path) if not os.path.isabs(path) else path
-              if not os.path.exists(full):
-                  return
-              with open(full, "r", encoding="utf-8") as f:
-                  content = f.read()
-              result, count = re.subn(pattern, new, content)
-              if count > 0:
-                  with open(full, "w", encoding="utf-8", newline="\n") as f:
-                      f.write(result)
-                  print(f"[OK] {desc}")
+          def patch_re(path, pattern, new):
+              full = os.path.join(src, path)
+              if not os.path.exists(full): return
+              with open(full, "r", encoding="utf-8") as f: content = f.read()
+              result, n = re.subn(pattern, new, content)
+              if n:
+                  with open(full, "w", encoding="utf-8", newline="\n") as f: f.write(result)
 
-          patch("cmake/options_win.cmake",
-                "/MP     # Enable multi process build.",
-                "/MP\n        /FS",
-                "Enable /FS flag")
-          patch_regex("cmake/options_win.cmake",
-                      r'/DEBUG(?!\:NONE)', '/DEBUG:NONE',
-                      "Disable MSVC debug symbols")
+          patch("cmake/options_win.cmake", "/MP     # Enable multi process build.", "/MP\n        /FS")
+          patch_re("cmake/options_win.cmake", r'/DEBUG(?!\:NONE)', '/DEBUG:NONE')
           patch("cmake/variables.cmake",
                 'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase" CACHE STRING "")',
-                'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)',
-                "Clear MSVC debug info format")
+                'set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "" CACHE STRING "" FORCE)')
 
-          prep = "Telegram/build/prepare/prepare.py"
-          patch(prep, "qt = os.environ.get('QT')", "qt = os.environ['QT']", "Fix QT env access")
-          patch(prep, 'move out.dbg\\ossl_static.pdb', 'if exist out.dbg echo skip', "Skip OpenSSL PDB")
-          patch(prep, 'move out.dbg\\ossl_static', 'if exist out.dbg echo skip', "Skip OpenSSL static move")
-          patch(prep, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release', "Force Qt Release (Win)")
-          patch(prep, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release', "Force Qt Release (Unix)")
-          patch(prep, 'cmake --build . --config Debug', 'echo Skipping Debug build...', "Skip Debug builds (.)")
-          patch(prep, 'cmake --build out --config Debug', 'echo Skipping Debug build...', "Skip Debug builds (out)")
-          patch(prep, 'cmake --install . --config Debug', 'echo Skipping Debug install...', "Skip Debug installs")
+          p = "Telegram/build/prepare/prepare.py"
+          patch(p, "qt = os.environ.get('QT')", "qt = os.environ['QT']")
+          patch(p, 'move out.dbg\\ossl_static.pdb', 'if exist out.dbg echo skip')
+          patch(p, 'move out.dbg\\ossl_static', 'if exist out.dbg echo skip')
+          patch(p, 'SET CONFIGURATIONS=-debug-and-release', 'SET CONFIGURATIONS=-release')
+          patch(p, 'CONFIGURATIONS=-debug-and-release', 'CONFIGURATIONS=-release')
+          patch(p, 'cmake --build . --config Debug', 'echo skip')
+          patch(p, 'cmake --build out --config Debug', 'echo skip')
+          patch(p, 'cmake --install . --config Debug', 'echo skip')
 
-          gh_repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
-          update_url = f"https://raw.githubusercontent.com/{gh_repo}/update-manifest/"
-          target = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
-          patch(target,
-                'return AutoupdatePrefix("https://update.ayugram.one/");',
-                f'return AutoupdatePrefix("{update_url}");',
-                "Patch update URL (default)")
-          patch(target,
-                'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
-                f'const auto fixedPrefix = QString::fromStdString("{update_url}");',
-                "Patch update URL (fixed)")
+          repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
+          url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
+          t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
+          patch(t, 'return AutoupdatePrefix("https://update.ayugram.one/");',
+                   f'return AutoupdatePrefix("{url}");')
+          patch(t, 'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
+                   f'const auto fixedPrefix = QString::fromStdString("{url}");')
 
-      - name: Libraries.
+      - name: Build libraries
         env:
           GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
           GYP_MSVS_VERSION: 2022
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
 
-      - name: Free up disk space.
+      - name: Free disk space
         shell: bash
         run: |
           if [ -d "$LibrariesPath" ]; then
@@ -231,16 +204,10 @@ jobs:
               '(' \
                 '(' \
                   ! '(' \
-                    -name '*.lib' \
-                    -o -name '*.a' \
-                    -o -name '*.exe' \
-                    -o -name '*.h' \
-                    -o -name '*.hpp' \
-                    -o -name '*.inc' \
-                    -o -name '*.cmake' \
-                    -o -path '*/include/*' \
-                    -o -path '*/objects-*' \
-                    -o -path '*/cache_keys/*' \
+                    -name '*.lib' -o -name '*.a' -o -name '*.exe' \
+                    -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' \
+                    -o -name '*.cmake' -o -path '*/include/*' \
+                    -o -path '*/objects-*' -o -path '*/cache_keys/*' \
                     -o -path '*/patches/*' \
                   ')' \
                   -type f \
@@ -249,82 +216,50 @@ jobs:
               ')' -delete
           fi
 
-      - name: Build AyuGram.
+      - name: Build AyuGram
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
-
           call configure.bat ^
             ${{ matrix.arch }} ^
             -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
             -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
             -D DESKTOP_APP_ENABLE_LTO=ON
-
           cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
 
-      - name: Prepare artifact.
-        run: |
-          set "OUT=%TBUILD%\%REPO_NAME%\out\Release"
-          mkdir artifact
-
-          if exist "%OUT%\AyuGram.exe" (
-            move "%OUT%\AyuGram.exe" artifact\
-          ) else if exist "%OUT%\Telegram.exe" (
-            move "%OUT%\Telegram.exe" artifact\AyuGram.exe
-          )
-
-          if exist "%OUT%\Updater.exe" move "%OUT%\Updater.exe" artifact\
-          if exist "%OUT%\modules" xcopy "%OUT%\modules" artifact\modules\ /E /I /Y
-
-      - name: Strip debug files.
-        shell: pwsh
-        run: |
-          Get-ChildItem artifact\*.pdb -Recurse | Remove-Item -Force
-          Get-ChildItem artifact\*.ilk -Recurse | Remove-Item -Force
-
-      - name: Package.
-        shell: pwsh
-        run: |
-          Compress-Archive -Path artifact\* -DestinationPath "AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}.zip"
-
-      - name: Upload build artifact.
-        uses: actions/upload-artifact@v4
-        with:
-          name: AyuGram-Windows-${{ matrix.arch }}
-          path: artifact/
-
-      - name: Upload release zip.
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-win-${{ matrix.arch }}
-          path: "AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}.zip"
-
-      - name: Save version.
+      - name: Package
         shell: bash
         run: |
-          echo "$VERSION" > version.txt
-          echo "$VERSION_NUM" > version_num.txt
+          OUT="$TBUILD/$REPO_NAME/out/Release"
+          mkdir -p pkg
+          for f in AyuGram.exe Telegram.exe; do
+            [ -f "$OUT/$f" ] && cp "$OUT/$f" pkg/AyuGram.exe && break
+          done
+          [ -f "$OUT/Updater.exe" ] && cp "$OUT/Updater.exe" pkg/
+          [ -d "$OUT/modules" ] && cp -r "$OUT/modules" pkg/
+          find pkg -name '*.pdb' -o -name '*.ilk' -o -name '*.exp' | xargs rm -f 2>/dev/null || true
+          cd pkg && 7z a -mx9 "../AyuGram-Windows-${{ matrix.arch }}-${VERSION}.zip" . > /dev/null
 
-      - name: Upload version info.
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: version-${{ matrix.arch }}
-          path: |
-            version.txt
-            version_num.txt
+          name: AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}
+          path: "AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}.zip"
+          retention-days: 90
 
   linux:
     name: Linux x64
     runs-on: ubuntu-22.04
     timeout-minutes: 360
 
-    steps:
-      - name: Checkout builder repo.
-        uses: actions/checkout@v4
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_num: ${{ steps.version.outputs.version_num }}
 
-      - name: Free up disk space.
+    steps:
+      - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
             /opt/ghc /usr/local/graalvm /usr/local/.ghcup \
@@ -332,27 +267,30 @@ jobs:
             /usr/local/lib/node_modules 2>/dev/null || true
           sudo docker image prune --all --force 2>/dev/null || true
 
-      - name: Clone AyuGramDesktop.
+      - name: Clone AyuGramDesktop
         run: |
-          git clone --recursive \
+          git clone --recursive --depth 1 --shallow-submodules --jobs 4 \
             --branch "${{ github.event.inputs.branch }}" \
             https://github.com/AyuGram/AyuGramDesktop.git tdesktop
 
-      - name: Read version.
+      - name: Read version
+        id: version
         run: |
-          VERSION=$(grep 'AppVersionStr ' tdesktop/Telegram/build/version | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' tdesktop/Telegram/build/version | awk '{ print $2 }')
+          VFILE="tdesktop/Telegram/build/version"
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
-      - name: Patch update URL.
+      - name: Patch update URL
         run: |
-          REPO="${{ github.repository }}"
-          URL="https://raw.githubusercontent.com/${REPO}/update-manifest/"
+          URL="https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
           sed -i "s|https://update.ayugram.one/|${URL}|g" \
             tdesktop/Telegram/SourceFiles/storage/localstorage.cpp
 
-      - name: Build AyuGram (Docker).
+      - name: Build AyuGram
         run: |
           cd tdesktop
           docker run --rm \
@@ -364,48 +302,25 @@ jobs:
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
-      - name: Prepare artifact.
+      - name: Package
         run: |
-          mkdir -p artifact
+          mkdir -p pkg
           for bin in AyuGram Telegram; do
-            if [ -f "tdesktop/out/Release/$bin" ]; then
-              cp "tdesktop/out/Release/$bin" artifact/AyuGram
-              break
-            fi
+            [ -f "tdesktop/out/Release/$bin" ] && cp "tdesktop/out/Release/$bin" pkg/AyuGram && break
           done
-          [ -f tdesktop/out/Release/Updater ] && cp tdesktop/out/Release/Updater artifact/
-          strip --strip-debug --strip-unneeded artifact/* 2>/dev/null || true
-          chmod +x artifact/*
+          [ -f tdesktop/out/Release/Updater ] && cp tdesktop/out/Release/Updater pkg/
+          strip --strip-all pkg/* 2>/dev/null || true
+          chmod +x pkg/*
+          tar -czf "AyuGram-Linux-x64-${VERSION}.tar.gz" -C pkg .
 
-      - name: Package.
-        run: tar -czf "AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz" -C artifact .
-
-      - name: Upload build artifact.
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: AyuGram-Linux-x64
-          path: artifact/
-
-      - name: Upload release tarball.
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x64
+          name: AyuGram-Linux-x64-${{ env.VERSION }}
           path: "AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz"
-
-      - name: Save version.
-        run: |
-          echo "$VERSION" > version.txt
-          echo "$VERSION_NUM" > version_num.txt
-
-      - name: Upload version info.
-        uses: actions/upload-artifact@v4
-        with:
-          name: version-linux
-          path: |
-            version.txt
-            version_num.txt
+          retention-days: 90
 
   release:
     name: Create Release
@@ -413,71 +328,54 @@ jobs:
     if: success()
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout builder repo.
-        uses: actions/checkout@v4
+    env:
+      VERSION: ${{ needs.linux.outputs.version }}
+      VERSION_NUM: ${{ needs.linux.outputs.version_num }}
 
-      - name: Download all artifacts.
+    steps:
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts/
+          path: release/
+          merge-multiple: true
 
-      - name: Read version.
-        run: |
-          VERSION=$(cat artifacts/version-x64/version.txt)
-          VERSION_NUM=$(cat artifacts/version-x64/version_num.txt)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
-
-      - name: Collect release files.
-        run: |
-          mkdir -p release
-          cp artifacts/release-win-x64/*.zip release/ 2>/dev/null || true
-          cp artifacts/release-win-x86/*.zip release/ 2>/dev/null || true
-          cp artifacts/release-linux-x64/*.tar.gz release/ 2>/dev/null || true
-          ls -lh release/
-
-      - name: Generate update manifest.
-        run: |
-          REPO="${{ github.repository }}"
-          TAG="v${{ env.VERSION }}"
-          BASE="https://github.com/${REPO}/releases/download/${TAG}"
-          cat > release/current4 << MANIFEST
-          {
-            "win64": { "stable": { "released": "${{ env.VERSION_NUM }}", "link": "${BASE}/AyuGram-Windows-x64-${{ env.VERSION }}.zip" } },
-            "win":   { "stable": { "released": "${{ env.VERSION_NUM }}", "link": "${BASE}/AyuGram-Windows-x86-${{ env.VERSION }}.zip" } },
-            "linux": { "stable": { "released": "${{ env.VERSION_NUM }}", "link": "${BASE}/AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz" } }
-          }
-          MANIFEST
-
-      - name: Create GitHub Release.
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
           name: AyuGram v${{ env.VERSION }}
           body: |
-            AyuGram Desktop v${{ env.VERSION }}
+            **AyuGram Desktop v${{ env.VERSION }}**
 
-            | Platform | Architecture | Download |
-            |----------|-------------|----------|
+            | Platform | Arch | File |
+            |----------|------|------|
             | Windows | x64 | `AyuGram-Windows-x64-${{ env.VERSION }}.zip` |
             | Windows | x86 | `AyuGram-Windows-x86-${{ env.VERSION }}.zip` |
             | Linux | x64 | `AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz` |
 
-            Built from branch: `${{ github.event.inputs.branch }}`
+            Branch: `${{ github.event.inputs.branch }}`
           files: release/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update manifest branch.
+      - name: Update manifest
         run: |
+          TAG="v${VERSION}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          cat > current4 << EOF
+          {
+            "win64": { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Windows-x64-${VERSION}.zip" } },
+            "win":   { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Windows-x86-${VERSION}.zip" } },
+            "linux": { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Linux-x64-${VERSION}.tar.gz" } }
+          }
+          EOF
+          git init -q
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git config user.email "AyuGramBuilder@users.noreply.github.com"
           git config user.name "AyuGram CI"
-          git checkout --orphan update-manifest || git checkout update-manifest
-          git rm -rf . 2>/dev/null || true
-          cp release/current4 current4
+          git checkout --orphan update-manifest
           git add current4
-          git commit -m "Update manifest for v${{ env.VERSION }}"
+          git commit -q -m "Update manifest for v${VERSION}"
           git push -f origin update-manifest
