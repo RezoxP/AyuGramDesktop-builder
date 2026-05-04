@@ -1,0 +1,117 @@
+name: Build Linux (x64 & x86)
+
+on:
+  push:
+    branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'Changelog.txt'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'Changelog.txt'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'AyuGram branch to build'
+        required: true
+        default: 'dev'
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64]
+        include:
+          - arch: x64
+            docker_platform: linux/amd64
+
+    env:
+      TDESKTOP_API_ID: "2040"
+      TDESKTOP_API_HASH: "b18441a1ff607e10a989891a5462e627"
+
+    steps:
+      - name: Checkout builder repo.
+        uses: actions/checkout@v4
+
+      - name: Free up disk space.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+            /opt/ghc /usr/local/graalvm /usr/local/.ghcup \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/lib/node_modules 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+
+      - name: Clone AyuGramDesktop.
+        run: |
+          git clone --recursive \
+            --branch "${{ github.event.inputs.branch || 'dev' }}" \
+            https://github.com/AyuGram/AyuGramDesktop.git tdesktop
+
+      - name: Read version.
+        run: |
+          VERSION=$(grep 'AppVersionStr ' tdesktop/Telegram/build/version | awk '{ print $2 }')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected version: $VERSION"
+
+      - name: Patch updater URL to use this repo releases.
+        run: |
+          REPO="${{ github.repository }}"
+          UPDATE_URL="https://raw.githubusercontent.com/${REPO}/update-manifest/"
+          TARGET="tdesktop/Telegram/SourceFiles/storage/localstorage.cpp"
+
+          sed -i "s|https://update.ayugram.one/|${UPDATE_URL}|g" "$TARGET"
+          echo "Patched update URL to: ${UPDATE_URL}"
+          grep -n "AutoupdatePrefix" "$TARGET" | head -5
+
+      - name: Build AyuGram (Docker).
+        run: |
+          cd tdesktop
+          docker run --rm \
+            -u $(id -u) \
+            -v "$PWD:/usr/src/tdesktop" \
+            ghcr.io/telegramdesktop/tdesktop/centos_env:latest \
+            /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+            -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
+            -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+
+      - name: Strip debug symbols.
+        run: |
+          strip --strip-debug --strip-unneeded tdesktop/out/Release/Telegram || true
+          ls -lh tdesktop/out/Release/
+
+      - name: Prepare artifact.
+        run: |
+          mkdir -p artifact
+          if [ -f tdesktop/out/Release/AyuGram ]; then
+            cp tdesktop/out/Release/AyuGram artifact/
+          elif [ -f tdesktop/out/Release/Telegram ]; then
+            cp tdesktop/out/Release/Telegram artifact/AyuGram
+          fi
+          if [ -f tdesktop/out/Release/Updater ]; then
+            cp tdesktop/out/Release/Updater artifact/
+          fi
+          chmod +x artifact/*
+
+      - name: Package tarball.
+        run: |
+          tar -czf "AyuGram-Linux-${{ matrix.arch }}-${{ env.VERSION }}.tar.gz" -C artifact .
+
+      - name: Upload artifact.
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Linux-${{ matrix.arch }}-${{ env.VERSION }}
+          path: artifact/
