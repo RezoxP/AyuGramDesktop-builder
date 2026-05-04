@@ -2,22 +2,26 @@
 
 CI/CD builder for [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) — builds release binaries for Windows (x64 & x86) and Linux (x64) with no debug symbols.
 
-## Workflows
+## Workflow
 
-### `build-windows.yml` — Windows x64 & x86
+### `build.yml` — Build & Release
 
-Builds AyuGram for Windows in Release configuration using MSVC on `windows-2022`. Produces stripped binaries (no PDB/debug symbols). Triggered on push to `main`/`dev`, PRs, or manual dispatch.
+Single workflow triggered via **manual dispatch** (`workflow_dispatch`). Builds all platforms in parallel, then creates a GitHub Release only if every build succeeds.
 
-### `build-linux.yml` — Linux x64
+**Jobs:**
 
-Builds AyuGram for Linux x64 using the official Docker build environment (`ghcr.io/telegramdesktop/tdesktop/centos_env`). Strips debug symbols with `strip`. Triggered on push to `main`/`dev`, PRs, or manual dispatch.
+| Job | Platform | Architecture | Runner |
+|-----|----------|-------------|--------|
+| `windows` (matrix) | Windows | x64, x86 | `windows-2022` |
+| `linux` | Linux | x64 | `ubuntu-22.04` (Docker) |
+| `release` | — | — | `ubuntu-latest` |
 
-### `release.yml` — Create GitHub Release
-
-Manual dispatch workflow that builds all platforms and creates a GitHub Release with downloadable archives:
+**Artifacts:**
 - `AyuGram-Windows-x64-{version}.zip`
 - `AyuGram-Windows-x86-{version}.zip`
 - `AyuGram-Linux-x64-{version}.tar.gz`
+
+The release job runs only after all build jobs pass (`needs: [windows, linux]`). It creates a tagged GitHub Release and pushes an update manifest to the `update-manifest` branch.
 
 ## Update Mechanism
 
@@ -41,4 +45,4 @@ Standalone update checker scripts are included for manual updates from GitHub Re
 
 - **API Credentials**: Builds use Telegram API ID `2040` / hash `b18441a1ff607e10a989891a5462e627` (from official AyuGram).
 - **Linux x86 (32-bit)**: Not supported upstream — the AyuGram/Telegram Docker build environment only targets x86_64.
-- **Windows x86**: Included in the matrix but may require longer build times and separate library caches.
+- **Release gating**: The GitHub Release is only created when all three builds (Windows x64, Windows x86, Linux x64) succeed.
