@@ -19,8 +19,9 @@ if (-not $InstallDir) {
 function Get-InstalledVersion {
     $exePath = Join-Path $InstallDir "AyuGram.exe"
     if (Test-Path $exePath) {
-        $ver = (Get-Item $exePath).VersionInfo.FileVersion
-        if ($ver) { return $ver.Trim() }
+        $ver = (Get-Item $exePath).VersionInfo.ProductVersion
+        if (-not $ver) { $ver = (Get-Item $exePath).VersionInfo.FileVersion }
+        if ($ver) { return ($ver.Trim() -replace '(\.0)+$', '') }
     }
     return $null
 }

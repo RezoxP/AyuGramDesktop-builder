@@ -29,7 +29,7 @@ if [ -z "$LATEST_VERSION" ]; then
     exit 1
 fi
 
-CURRENT_VERSION=$(get_installed_version)
+CURRENT_VERSION=$(get_installed_version) || true
 
 log "Current version: ${CURRENT_VERSION:-not installed}"
 log "Latest version:  $LATEST_VERSION"
