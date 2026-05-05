@@ -104,7 +104,7 @@ try {
 
     $newVersion = Get-InstalledVersion
     Write-Status "Updated to $newVersion"
-    Write-Status "Backup saved to: $backupDir"
+    if (Test-Path $backupDir) { Write-Status "Backup saved to: $backupDir" }
     Write-Status "Restart AyuGram to use the new version."
 
 } catch {

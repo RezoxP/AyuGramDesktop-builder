@@ -7,7 +7,7 @@ FORCE="${FORCE:-false}"
 SILENT="${SILENT:-false}"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
-log() { [ "$SILENT" = "false" ] && echo "$@"; }
+log() { if [ "$SILENT" = "false" ]; then echo "$@"; fi; }
 
 get_installed_version() {
     local exe="$INSTALL_DIR/AyuGram"
@@ -115,5 +115,5 @@ chmod +x "$INSTALL_DIR/check-update.sh" 2>/dev/null || true
 
 NEW_VERSION=$(get_installed_version)
 log "Updated to ${NEW_VERSION:-$LATEST_VERSION}"
-log "Backup saved to: $BACKUP_DIR"
+if [ -d "$BACKUP_DIR" ]; then log "Backup saved to: $BACKUP_DIR"; fi
 log "Restart AyuGram to use the new version."
