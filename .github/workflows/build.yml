@@ -90,9 +90,7 @@ jobs:
         run: |
           VFILE="$TBUILD/$REPO_NAME/Telegram/build/version"
           VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
 
           PREP="$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
           echo "$(sha256sum "$PREP" | awk '{ print $1 }')" > CACHE_KEY.txt
@@ -181,13 +179,6 @@ jobs:
           patch(p, 'cmake --build out --config Debug', 'echo skip')
           patch(p, 'cmake --install . --config Debug', 'echo skip')
 
-          repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
-          url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
-          t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
-          patch(t, 'return AutoupdatePrefix("https://update.ayugram.one/");',
-                   f'return AutoupdatePrefix("{url}");')
-          patch(t, 'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
-                   f'const auto fixedPrefix = QString::fromStdString("{url}");')
 
       - name: Build libraries
         env:
@@ -224,7 +215,7 @@ jobs:
             -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
             -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
             -D CMAKE_CONFIGURATION_TYPES=Release ^
-            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
             -D DESKTOP_APP_ENABLE_LTO=ON
           cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
@@ -237,8 +228,8 @@ jobs:
           for f in AyuGram.exe Telegram.exe; do
             [ -f "$OUT/$f" ] && cp "$OUT/$f" pkg/AyuGram.exe && break
           done
-          [ -f "$OUT/Updater.exe" ] && cp "$OUT/Updater.exe" pkg/
           [ -d "$OUT/modules" ] && cp -r "$OUT/modules" pkg/
+          cp "$GITHUB_WORKSPACE/.github/scripts/check-update.ps1" pkg/
           find pkg -name '*.pdb' -o -name '*.ilk' -o -name '*.exp' | xargs rm -f 2>/dev/null || true
           cd pkg && 7z a -mx9 "../AyuGram-Windows-${{ matrix.arch }}-${VERSION}.zip" . > /dev/null
 
@@ -256,9 +247,11 @@ jobs:
 
     outputs:
       version: ${{ steps.version.outputs.version }}
-      version_num: ${{ steps.version.outputs.version_num }}
 
     steps:
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
@@ -278,17 +271,8 @@ jobs:
         run: |
           VFILE="tdesktop/Telegram/build/version"
           VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
-
-      - name: Patch update URL
-        run: |
-          URL="https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
-          sed -i "s|https://update.ayugram.one/|${URL}|g" \
-            tdesktop/Telegram/SourceFiles/storage/localstorage.cpp
 
       - name: Build AyuGram
         run: |
@@ -301,7 +285,7 @@ jobs:
             /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
-            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
       - name: Package
@@ -310,7 +294,7 @@ jobs:
           for bin in AyuGram Telegram; do
             [ -f "tdesktop/out/Release/$bin" ] && cp "tdesktop/out/Release/$bin" pkg/AyuGram && break
           done
-          [ -f tdesktop/out/Release/Updater ] && cp tdesktop/out/Release/Updater pkg/
+          cp "$GITHUB_WORKSPACE/.github/scripts/check-update.sh" pkg/
           strip --strip-all pkg/* 2>/dev/null || true
           chmod +x pkg/*
           tar -czf "AyuGram-Linux-x64-${VERSION}.tar.gz" -C pkg .
@@ -330,7 +314,6 @@ jobs:
 
     env:
       VERSION: ${{ needs.linux.outputs.version }}
-      VERSION_NUM: ${{ needs.linux.outputs.version_num }}
 
     steps:
       - name: Download artifacts
@@ -354,28 +337,10 @@ jobs:
             | Linux | x64 | `AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz` |
 
             Branch: `${{ github.event.inputs.branch }}`
+
+            **Updating:** Run `check-update.ps1` (Windows) or `check-update.sh` (Linux) included in each package to check for and install new versions.
           files: release/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update manifest
-        run: |
-          TAG="v${VERSION}"
-          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-          cat > current4 << EOF
-          {
-            "win64": { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Windows-x64-${VERSION}.zip" } },
-            "win":   { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Windows-x86-${VERSION}.zip" } },
-            "linux": { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Linux-x64-${VERSION}.tar.gz" } }
-          }
-          EOF
-          git init -q
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git config user.email "AyuGramBuilder@users.noreply.github.com"
-          git config user.name "AyuGram CI"
-          git checkout --orphan update-manifest
-          git add current4
-          git commit -q -m "Update manifest for v${VERSION}"
-          git push -f origin update-manifest
