@@ -8,12 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not $InstallDir) {
-    $exe = Get-ChildItem -Path $PSScriptRoot -Filter "AyuGram.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($exe) {
-        $InstallDir = $PSScriptRoot
-    } else {
-        $InstallDir = $PSScriptRoot
-    }
+    $InstallDir = $PSScriptRoot
 }
 
 function Get-InstalledVersion {
@@ -41,7 +36,7 @@ try {
     exit 1
 }
 
-$latestVersion = $release.tag_name -replace '^v', ''
+$latestVersion = ($release.tag_name -replace '^v', '') -replace '(\.0)+$', ''
 $currentVersion = Get-InstalledVersion
 
 Write-Status "Current version: $(if ($currentVersion) { $currentVersion } else { 'not installed' })"
