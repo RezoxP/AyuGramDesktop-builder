@@ -77,13 +77,11 @@ jobs:
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
 
       - name: Clone AyuGramDesktop
-        uses: actions/checkout@v4
-        with:
-          repository: AyuGram/AyuGramDesktop
-          ref: ${{ github.event.inputs.branch }}
-          submodules: recursive
-          fetch-depth: 1
-          path: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
+        run: |
+          git clone --recursive --depth 1 --shallow-submodules --jobs %NUMBER_OF_PROCESSORS% ^
+            --branch "${{ github.event.inputs.branch }}" --filter=blob:none ^
+            https://github.com/AyuGram/AyuGramDesktop.git "%TBUILD%\%REPO_NAME%"
+        shell: cmd
 
       - name: Read version
         shell: bash
@@ -149,21 +147,30 @@ jobs:
           import os, sys, re
           sys.stdout.reconfigure(encoding='utf-8')
           src = os.path.join(os.environ["TBUILD"], os.environ["REPO_NAME"])
+          patched = {}
 
           def patch(path, old, new):
               full = os.path.join(src, path)
-              if not os.path.exists(full): return
-              with open(full, "r", encoding="utf-8") as f: content = f.read()
+              if not os.path.exists(full):
+                  return
+              with open(full, "r", encoding="utf-8") as f:
+                  content = f.read()
               if old in content:
-                  with open(full, "w", encoding="utf-8", newline="\n") as f: f.write(content.replace(old, new))
+                  with open(full, "w", encoding="utf-8", newline="\n") as f:
+                      f.write(content.replace(old, new))
+                  patched.setdefault(path, []).append(old[:60])
 
           def patch_re(path, pattern, new):
               full = os.path.join(src, path)
-              if not os.path.exists(full): return
-              with open(full, "r", encoding="utf-8") as f: content = f.read()
+              if not os.path.exists(full):
+                  return
+              with open(full, "r", encoding="utf-8") as f:
+                  content = f.read()
               result, n = re.subn(pattern, new, content)
               if n:
-                  with open(full, "w", encoding="utf-8", newline="\n") as f: f.write(result)
+                  with open(full, "w", encoding="utf-8", newline="\n") as f:
+                      f.write(result)
+                  patched.setdefault(path, []).append(f"regex:{pattern[:40]}")
 
           patch("cmake/options_win.cmake", "/MP     # Enable multi process build.", "/MP\n        /FS")
           patch_re("cmake/options_win.cmake", r'/DEBUG(?!\:NONE)', '/DEBUG:NONE')
@@ -183,11 +190,34 @@ jobs:
 
           repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
           url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
+
+          update_url_patterns = [
+              ('return AutoupdatePrefix("https://update.ayugram.one/");',
+               f'return AutoupdatePrefix("{url}");'),
+              ('const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
+               f'const auto fixedPrefix = QString::fromStdString("{url}");'),
+          ]
           t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
-          patch(t, 'return AutoupdatePrefix("https://update.ayugram.one/");',
-                   f'return AutoupdatePrefix("{url}");')
-          patch(t, 'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
-                   f'const auto fixedPrefix = QString::fromStdString("{url}");')
+          for old, new in update_url_patterns:
+              patch(t, old, new)
+
+          u = os.path.join(src, "Telegram", "SourceFiles", "core", "update_checker.cpp")
+          patch(u,
+                'Local::readAutoupdatePrefix() + bestLink)',
+                'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))')
+
+          required = {
+              t: 'AutoupdatePrefix',
+              u: 'bestLink.startsWith',
+          }
+          for fpath, marker in required.items():
+              with open(fpath, "r", encoding="utf-8") as f:
+                  if marker not in f.read():
+                      print(f"FATAL: patch verification failed for {fpath} (missing {marker})")
+                      sys.exit(1)
+
+          for path, items in patched.items():
+              print(f"Patched {path}: {len(items)} replacement(s)")
 
       - name: Build libraries
         env:
@@ -226,7 +256,8 @@ jobs:
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
-            -D DESKTOP_APP_ENABLE_LTO=ON
+            -D DESKTOP_APP_ENABLE_LTO=ON ^
+            -D CMAKE_UNITY_BUILD=ON
           cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package
@@ -267,11 +298,15 @@ jobs:
             /usr/local/lib/node_modules 2>/dev/null || true
           sudo docker image prune --all --force 2>/dev/null || true
 
-      - name: Clone AyuGramDesktop
+      - name: Clone AyuGramDesktop and pull Docker image
         run: |
-          git clone --recursive --depth 1 --shallow-submodules --jobs 4 \
+          docker pull ghcr.io/telegramdesktop/tdesktop/centos_env:latest &
+          DOCKER_PID=$!
+          git clone --recursive --depth 1 --shallow-submodules \
+            --jobs $(nproc) --filter=blob:none \
             --branch "${{ github.event.inputs.branch }}" \
             https://github.com/AyuGram/AyuGramDesktop.git tdesktop
+          wait $DOCKER_PID
 
       - name: Read version
         id: version
@@ -284,11 +319,62 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
-      - name: Patch update URL
+      - name: Apply patches
+        shell: python3 {0}
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          URL="https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
-          sed -i "s|https://update.ayugram.one/|${URL}|g" \
-            tdesktop/Telegram/SourceFiles/storage/localstorage.cpp
+          import os, sys, re
+
+          src = "tdesktop"
+          patched = {}
+
+          def patch(path, old, new):
+              full = os.path.join(src, path)
+              if not os.path.exists(full):
+                  return
+              with open(full, "r", encoding="utf-8") as f:
+                  content = f.read()
+              if old in content:
+                  with open(full, "w", encoding="utf-8", newline="\n") as f:
+                      f.write(content.replace(old, new))
+                  patched.setdefault(path, []).append(old[:60])
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder")
+          url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
+
+          update_url_patterns = [
+              ('return AutoupdatePrefix("https://update.ayugram.one/");',
+               f'return AutoupdatePrefix("{url}");'),
+              ('const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
+               f'const auto fixedPrefix = QString::fromStdString("{url}");'),
+          ]
+          t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
+          for old, new in update_url_patterns:
+              patch(t, old, new)
+
+          u = os.path.join(src, "Telegram", "SourceFiles", "core", "update_checker.cpp")
+          patch(u,
+                'Local::readAutoupdatePrefix() + bestLink)',
+                'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))')
+
+          required = {
+              t: 'AutoupdatePrefix',
+              u: 'bestLink.startsWith',
+          }
+          for fpath, marker in required.items():
+              with open(fpath, "r", encoding="utf-8") as f:
+                  if marker not in f.read():
+                      print(f"FATAL: patch verification failed for {fpath} (missing {marker})")
+                      sys.exit(1)
+
+          for path, items in patched.items():
+              print(f"Patched {path}: {len(items)} replacement(s)")
+
+      - name: Enable parallel Docker build
+        run: |
+          sed -i 's|cmake --build \.\./out|cmake --build ../out --parallel $(nproc)|' \
+            tdesktop/Telegram/build/docker/centos_env/build.sh
 
       - name: Build AyuGram
         run: |
@@ -302,7 +388,8 @@ jobs:
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
+            -D CMAKE_UNITY_BUILD=ON
 
       - name: Package
         run: |
@@ -371,6 +458,7 @@ jobs:
             "linux": { "stable": { "released": "${VERSION_NUM}", "link": "${BASE}/AyuGram-Linux-x64-${VERSION}.tar.gz" } }
           }
           EOF
+          python3 -c "import json; json.load(open('current4'))" || { echo 'Invalid manifest JSON'; exit 1; }
           git init -q
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git config user.email "AyuGramBuilder@users.noreply.github.com"
