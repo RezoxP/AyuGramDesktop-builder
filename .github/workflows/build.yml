@@ -256,8 +256,7 @@ jobs:
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
-            -D DESKTOP_APP_ENABLE_LTO=ON ^
-            -D CMAKE_UNITY_BUILD=ON
+            -D DESKTOP_APP_ENABLE_LTO=ON
           cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package
@@ -388,8 +387,7 @@ jobs:
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
-            -D CMAKE_UNITY_BUILD=ON
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
       - name: Package
         run: |
