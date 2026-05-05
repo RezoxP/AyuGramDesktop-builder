@@ -197,18 +197,18 @@ jobs:
               ('const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
                f'const auto fixedPrefix = QString::fromStdString("{url}");'),
           ]
-          t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
+          t_rel = os.path.join("Telegram", "SourceFiles", "storage", "localstorage.cpp")
           for old, new in update_url_patterns:
-              patch(t, old, new)
+              patch(t_rel, old, new)
 
-          u = os.path.join(src, "Telegram", "SourceFiles", "core", "update_checker.cpp")
-          patch(u,
+          u_rel = os.path.join("Telegram", "SourceFiles", "core", "update_checker.cpp")
+          patch(u_rel,
                 'Local::readAutoupdatePrefix() + bestLink)',
                 'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))')
 
           required = {
-              t: 'AutoupdatePrefix',
-              u: 'bestLink.startsWith',
+              os.path.join(src, t_rel): 'AutoupdatePrefix',
+              os.path.join(src, u_rel): 'bestLink.startsWith',
           }
           for fpath, marker in required.items():
               with open(fpath, "r", encoding="utf-8") as f:
@@ -349,18 +349,18 @@ jobs:
               ('const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
                f'const auto fixedPrefix = QString::fromStdString("{url}");'),
           ]
-          t = os.path.join(src, "Telegram", "SourceFiles", "storage", "localstorage.cpp")
+          t_rel = os.path.join("Telegram", "SourceFiles", "storage", "localstorage.cpp")
           for old, new in update_url_patterns:
-              patch(t, old, new)
+              patch(t_rel, old, new)
 
-          u = os.path.join(src, "Telegram", "SourceFiles", "core", "update_checker.cpp")
-          patch(u,
+          u_rel = os.path.join("Telegram", "SourceFiles", "core", "update_checker.cpp")
+          patch(u_rel,
                 'Local::readAutoupdatePrefix() + bestLink)',
                 'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))')
 
           required = {
-              t: 'AutoupdatePrefix',
-              u: 'bestLink.startsWith',
+              os.path.join(src, t_rel): 'AutoupdatePrefix',
+              os.path.join(src, u_rel): 'bestLink.startsWith',
           }
           for fpath, marker in required.items():
               with open(fpath, "r", encoding="utf-8") as f:
