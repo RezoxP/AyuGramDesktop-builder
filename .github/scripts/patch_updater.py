@@ -8,7 +8,7 @@ The patch:
   1. Adds `#include <minizip/unzip.h>` (minizip is already linked via
      desktop-app::external_minizip in Telegram/CMakeLists.txt — no new deps).
   2. Inserts a zip-detection block at the start of UnpackUpdate() that:
-       - peeks the first 4 bytes for the PK\x03\x04 magic
+       - peeks the first 4 bytes for the PK\\x03\\x04 magic
        - if matched, extracts the zip directly to tupdates/temp/
        - writes the tdata/version marker (required by checkReadyUpdate())
        - writes the tupdates/temp/ready flag file (required by checkReadyUpdate())
@@ -44,20 +44,21 @@ TARGET_REL = "Telegram/SourceFiles/core/update_checker.cpp"
 SENTINEL_INCLUDE = "#include <minizip/unzip.h>"
 SENTINEL_MARKER = "RezoxP patch: plain-zip update support"
 
-# The exact function signature in upstream AyuGram (verified against
-# the `dev` branch as of 2026-08).
-FUNC_SIG = "bool UnpackUpdate(const QString &filepath) {"
+# Anchor: the function signature + the #ifndef gate that opens the body.
+# We insert the patch block immediately AFTER the #ifndef line so the patch
+# lives *inside* the existing TDESKTOP_DISABLE_AUTOUPDATE guard (no duplicate
+# #ifndef needed, and the patch is correctly disabled when autoupdate is off).
+FUNC_SIG = "bool UnpackUpdate(const QString &filepath) {\n#ifndef TDESKTOP_DISABLE_AUTOUPDATE"
 
-# Block to insert immediately after the opening brace of UnpackUpdate().
+# Block to insert immediately after the #ifndef line.
 # Indentation is TABS to match the upstream file.
 PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
+#ifndef TDESKTOP_DISABLE_AUTOUPDATE
 \t// === RezoxP patch: plain-zip update support ===
 \t// If the downloaded file is a regular .zip (PK\\x03\\x04 magic), extract it
 \t// directly to tupdates/temp/ using minizip, write the version marker + ready
 \t// flag that checkReadyUpdate() expects, and skip the SHA1/RSA/LZMA path.
 \t// Falls through to the original Telegram-format handling otherwise.
-\t// (NOTE: this block lives inside the existing #ifndef TDESKTOP_DISABLE_AUTOUPDATE
-\t// gate that wraps the whole function — do not add a duplicate #ifndef here.)
 \t{
 \t\tQFile peek(filepath);
 \t\tif (peek.open(QIODevice::ReadOnly)) {
