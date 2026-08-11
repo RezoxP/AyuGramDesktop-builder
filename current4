@@ -1,0 +1,5 @@
+{
+  "win64": { "stable": { "released": "7000009", "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.0.9/AyuGram-Windows-x64-7.0.9.zip" } },
+  "win":   { "stable": { "released": "7000009", "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.0.9/AyuGram-Windows-x86-7.0.9.zip" } },
+  "linux": { "stable": { "released": "7000009", "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.0.9/AyuGram-Linux-x64-7.0.9.tar.gz" } }
+}
