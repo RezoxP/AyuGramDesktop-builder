@@ -7,6 +7,11 @@ on:
         description: 'AyuGram branch to build'
         required: true
         default: 'dev'
+      enable_lto:
+        description: 'Enable Link-Time Optimization (LTO)'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,6 +19,7 @@ permissions:
 env:
   TDESKTOP_API_ID: "2040"
   TDESKTOP_API_HASH: "b18441a1ff607e10a989891a5462e627"
+  DESKTOP_APP_ENABLE_LTO: ${{ (inputs.enable_lto == true || github.event.inputs.enable_lto == 'true') && 'ON' || 'OFF' }}
 
 jobs:
 
@@ -247,7 +253,7 @@ jobs:
             -D CMAKE_CONFIGURATION_TYPES=Release ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
-            -D DESKTOP_APP_ENABLE_LTO=ON
+            -D DESKTOP_APP_ENABLE_LTO=%DESKTOP_APP_ENABLE_LTO%
           cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package
@@ -389,7 +395,8 @@ jobs:
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
+            -D DESKTOP_APP_ENABLE_LTO=${{ env.DESKTOP_APP_ENABLE_LTO }}
 
       - name: Package
         run: |
