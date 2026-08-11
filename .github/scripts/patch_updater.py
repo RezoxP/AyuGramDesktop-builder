@@ -1,3 +1,39 @@
+#!/usr/bin/env python3
+"""
+Patch Telegram/AyuGram's update_checker.cpp to support plain .zip update
+files, bypassing the SHA1+RSA verification that requires Telegram's
+proprietary signed format (128B RSA sig + 20B SHA1 + LZMA-compressed payload).
+
+The patch:
+  1. Adds `#include <minizip/unzip.h>` (minizip is already linked via
+     desktop-app::external_minizip in Telegram/CMakeLists.txt — no new deps).
+  2. Inserts a zip-detection block at the start of UnpackUpdate() that:
+       - peeks the first 4 bytes for the PK\x03\x04 magic
+       - if matched, extracts the zip directly to tupdates/temp/
+       - writes the tdata/version marker (required by checkReadyUpdate())
+       - writes the tupdates/temp/ready flag file (required by checkReadyUpdate())
+       - deletes the downloaded archive and returns true
+       - otherwise falls through to the original Telegram-format code path
+         (so official signed updates would still work if you ever ship one)
+
+Usage:
+  python patch_updater.py /path/to/AyuGramDesktop
+
+The path should be the root of the AyuGramDesktop source tree (the dir
+that contains Telegram/SourceFiles/...). The script will locate and patch
+Telegram/SourceFiles/core/update_checker.cpp.
+
+Safe to re-run: if the patch is already applied, the script reports
+"already patched" and exits 0.
+
+Intended to be invoked from the "Apply patches" step of
+.github/workflows/build.yml in RezoxP/AyuGramDesktop-builder, e.g.:
+
+      - name: Apply patches
+        run: |
+          python .github/scripts/patch_updater.py AyuGramDesktop
+"""
+
 import sys
 import shutil
 from pathlib import Path
@@ -20,6 +56,8 @@ PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
 \t// directly to tupdates/temp/ using minizip, write the version marker + ready
 \t// flag that checkReadyUpdate() expects, and skip the SHA1/RSA/LZMA path.
 \t// Falls through to the original Telegram-format handling otherwise.
+\t// (NOTE: this block lives inside the existing #ifndef TDESKTOP_DISABLE_AUTOUPDATE
+\t// gate that wraps the whole function — do not add a duplicate #ifndef here.)
 \t{
 \t\tQFile peek(filepath);
 \t\tif (peek.open(QIODevice::ReadOnly)) {
