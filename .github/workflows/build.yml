@@ -11,7 +11,7 @@ on:
         description: 'Enable Link-Time Optimization (LTO)'
         required: true
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
