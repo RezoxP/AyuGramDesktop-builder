@@ -15,7 +15,6 @@ FUNC_SIG = "bool UnpackUpdate(const QString &filepath) {"
 # Block to insert immediately after the opening brace of UnpackUpdate().
 # Indentation is TABS to match the upstream file.
 PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
 \t// === RezoxP patch: plain-zip update support ===
 \t// If the downloaded file is a regular .zip (PK\\x03\\x04 magic), extract it
 \t// directly to tupdates/temp/ using minizip, write the version marker + ready
