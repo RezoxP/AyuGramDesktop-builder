@@ -66,22 +66,18 @@ env:
 jobs:
 
   # ---------------------------------------------------------------------
-  # Windows: x64 and x86 via MSVC on windows-2022
+  # Windows x64 via MSVC on windows-2022
   # ---------------------------------------------------------------------
-  windows:
-    name: Windows ${{ matrix.arch }}
-    if: ${{ github.event_name != 'workflow_dispatch' || (matrix.arch == 'x64' && inputs.build_windows_x64 != false) || (matrix.arch == 'x86' && inputs.build_windows_x86 != false) }}
+  windows_x64:
+    name: Windows x64
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows_x64 != false }}
     runs-on: windows-2022
     timeout-minutes: 360
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            libs_subdir: win64
-          - arch: x86
-            libs_subdir: ''
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_num: ${{ steps.version.outputs.version_num }}
+      upstream_sha: ${{ steps.clone.outputs.upstream_sha }}
 
     defaults:
       run:
@@ -123,9 +119,7 @@ jobs:
           echo "TBUILD=$GITHUB_WORKSPACE/TBuild" >> $GITHUB_ENV
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "COMMIT=$COMMIT" >> $GITHUB_ENV
-
-          if [ "${{ matrix.arch }}" = "x64" ]; then LIBS_SUB="win64"; else LIBS_SUB=""; fi
-          echo "LIBS_BASE=$GITHUB_WORKSPACE/TBuild/Libraries${LIBS_SUB:+/$LIBS_SUB}" >> $GITHUB_ENV
+          echo "LIBS_BASE=$GITHUB_WORKSPACE/TBuild/Libraries/win64" >> $GITHUB_ENV
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
             "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake 2>/dev/null || true
@@ -142,6 +136,7 @@ jobs:
           python-version: '3.12'
 
       - name: Clone AyuGramDesktop
+        id: clone
         shell: bash
         run: |
           set -e
@@ -158,6 +153,7 @@ jobs:
           git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
           UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
+          echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
           echo "Upstream commit: $UPSTREAM_SHA"
 
       - name: Apply patches
@@ -168,6 +164,7 @@ jobs:
             --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
 
       - name: Read version & cache key
+        id: version
         shell: bash
         run: |
           set -e
@@ -176,6 +173,8 @@ jobs:
           VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
           SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1)
@@ -184,7 +183,7 @@ jobs:
           echo "Using Windows SDK: $SDK"
 
           {
-            echo "v3-libs-${{ matrix.arch }}"
+            echo "v3-libs-x64"
             cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
             cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
@@ -195,7 +194,7 @@ jobs:
       - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: ${{ matrix.arch }}
+          arch: x64
           sdk: ${{ env.SDK }}
 
       - name: NuGet sources
@@ -208,8 +207,8 @@ jobs:
         id: cache-third-party
         with:
           path: ${{ env.TBUILD }}/ThirdParty
-          key: Windows-${{ matrix.arch }}-third-party-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-${{ matrix.arch }}-third-party-v3-
+          key: Windows-x64-third-party-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-third-party-v3-
 
       - name: Libraries cache (restore)
         uses: actions/cache/restore@v4
@@ -221,8 +220,8 @@ jobs:
             !${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/*
             !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-${{ matrix.arch }}-libs-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-${{ matrix.arch }}-libs-v3-
+          key: Windows-x64-libs-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-libs-v3-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -231,8 +230,8 @@ jobs:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-${{ matrix.arch }}-qt-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-${{ matrix.arch }}-qt-v3-
+          key: Windows-x64-qt-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-qt-v3-
 
       - name: Build libraries
         env:
@@ -306,7 +305,7 @@ jobs:
         run: |
           cd %TBUILD%\%REPO_NAME%\Telegram
           call configure.bat ^
-            ${{ matrix.arch }} ^
+            x64 ^
             -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
             -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
             -D CMAKE_CONFIGURATION_TYPES=Release ^
@@ -328,13 +327,284 @@ jobs:
           [ -f "$OUT/Updater.exe" ] && cp "$OUT/Updater.exe" pkg/ || true
           [ -d "$OUT/modules" ] && cp -r "$OUT/modules" pkg/ || true
           find pkg \( -name '*.pdb' -o -name '*.ilk' -o -name '*.exp' \) -print0 2>/dev/null | xargs -0 -r rm -f || true
-          cd pkg && 7z a -mx9 "../AyuGram-Windows-${{ matrix.arch }}-${VERSION}.zip" . > /dev/null
+          cd pkg && 7z a -mx9 "../AyuGram-Windows-x64-${VERSION}.zip" . > /dev/null
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}
-          path: "AyuGram-Windows-${{ matrix.arch }}-${{ env.VERSION }}.zip"
+          name: AyuGram-Windows-x64-${{ env.VERSION }}
+          path: "AyuGram-Windows-x64-${{ env.VERSION }}.zip"
+          retention-days: 90
+
+  # ---------------------------------------------------------------------
+  # Windows x86 via MSVC on windows-2022
+  # ---------------------------------------------------------------------
+  windows_x86:
+    name: Windows x86
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows_x86 != false }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_num: ${{ steps.version.outputs.version_num }}
+      upstream_sha: ${{ steps.clone.outputs.upstream_sha }}
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+
+      - name: Clean disk
+        run: |
+          if exist "C:\Program Files\Android" rmdir /s /q "C:\Program Files\Android"
+          if exist "C:\hostedtoolcache\windows" rmdir /s /q "C:\hostedtoolcache\windows"
+          if exist "C:\Program Files\dotnet" rmdir /s /q "C:\Program Files\dotnet"
+          if exist "C:\mysql" rmdir /s /q "C:\mysql"
+          net stop SQLWriter 2>nul || ver >nul
+          taskkill /F /IM sqlwriter.exe /T 2>nul || ver >nul
+          taskkill /F /IM sqlservr.exe /T 2>nul || ver >nul
+          if exist "C:\Program Files\Microsoft SQL Server" rmdir /s /q "C:\Program Files\Microsoft SQL Server"
+          exit /b 0
+
+      - name: Expand virtual memory
+        uses: al-cheb/configure-pagefile-action@v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: "C:"
+
+      - name: Setup environment
+        shell: bash
+        run: |
+          set -e
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          BRANCH="${{ inputs.branch || 'dev' }}"
+          COMMIT="${{ inputs.commit }}"
+
+          mkdir -p "$USERPROFILE/TBuild/Libraries"
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+          echo "TBUILD=$GITHUB_WORKSPACE/TBuild" >> $GITHUB_ENV
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "COMMIT=$COMMIT" >> $GITHUB_ENV
+          echo "LIBS_BASE=$GITHUB_WORKSPACE/TBuild/Libraries" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
+            "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake 2>/dev/null || true
+
+          git config --global user.email "AyuGramBuilder@users.noreply.github.com"
+          git config --global user.name "AyuGram CI"
+
+      - name: Create TBuild symlink
+        run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Clone AyuGramDesktop
+        id: clone
+        shell: bash
+        run: |
+          set -e
+          git clone --filter=blob:none --depth 1 --branch "$BRANCH" \
+            "https://github.com/${{ env.AYUGRAM_REPO }}.git" "$TBUILD/$REPO_NAME"
+
+          if [ -n "$COMMIT" ]; then
+            if git -C "$TBUILD/$REPO_NAME" fetch --depth 1 origin "$COMMIT"; then
+              git -C "$TBUILD/$REPO_NAME" checkout --detach FETCH_HEAD
+              echo "::notice::Checked out upstream commit $COMMIT"
+            fi
+          fi
+
+          git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
+          UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
+          echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
+          echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          echo "Upstream commit: $UPSTREAM_SHA"
+
+      - name: Apply patches
+        shell: bash
+        run: |
+          python .github/scripts/apply_patches.py "$TBUILD/$REPO_NAME" \
+            --platform windows \
+            --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
+
+      - name: Read version & cache key
+        id: version
+        shell: bash
+        run: |
+          set -e
+          VFILE="$TBUILD/$REPO_NAME/Telegram/build/version"
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
+
+          DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
+          SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1)
+          if [ -z "$SDK" ]; then SDK="10.0.26100.0"; fi
+          echo "SDK=$SDK" >> $GITHUB_ENV
+          echo "Using Windows SDK: $SDK"
+
+          {
+            echo "v3-libs-x86"
+            cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
+            cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
+            find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
+            echo "$SDK"
+          } | sha256sum | awk '{ print $1 }' > CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x86
+          sdk: ${{ env.SDK }}
+
+      - name: NuGet sources
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: ThirdParty cache (restore)
+        uses: actions/cache/restore@v4
+        id: cache-third-party
+        with:
+          path: ${{ env.TBUILD }}/ThirdParty
+          key: Windows-x86-third-party-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-third-party-v3-
+
+      - name: Libraries cache (restore)
+        uses: actions/cache/restore@v4
+        id: cache-libs
+        with:
+          path: |
+            ${{ env.LIBS_BASE }}/*
+            !${{ env.LIBS_BASE }}/cache_keys
+            !${{ env.LIBS_BASE }}/[qQ]t[_-]*
+            ${{ env.LIBS_BASE }}/cache_keys/*
+            !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
+          key: Windows-x86-libs-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-libs-v3-
+
+      - name: Qt cache (restore)
+        uses: actions/cache/restore@v4
+        id: cache-qt
+        with:
+          path: |
+            ${{ env.LIBS_BASE }}/[qQ]t[_-]*
+            ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
+          key: Windows-x86-qt-v3-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-qt-v3-
+
+      - name: Build libraries
+        env:
+          GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
+          GYP_MSVS_VERSION: 2022
+        run: |
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
+
+      - name: Generate stub DesktopPrivate
+        shell: bash
+        run: |
+          mkdir -p "$TBUILD/DesktopPrivate"
+          random_key() {
+            printf -- '[REDACTED:ssh_private_key]\n%s\n-----END RSA PRIVATE KEY-----\n' \
+              "$(head -c 96 /dev/urandom | base64 | tr -d '\n')"
+          }
+          printf 'const char *PrivateKey = "%s";\nconst char *PrivateBetaKey = "%s";\n' \
+            "$(random_key)" "$(random_key)" > "$TBUILD/DesktopPrivate/packer_private.h"
+          printf 'static const char *AlphaPrivateKey = "%s";\n' \
+            "$(random_key)" > "$TBUILD/DesktopPrivate/alpha_private.h"
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          if [ -d "$LIBS_BASE" ]; then
+            find "$LIBS_BASE" \
+              '(' \
+                '(' \
+                  ! '(' \
+                    -name '*.lib' -o -name '*.a' -o -name '*.exe' \
+                    -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' \
+                    -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' \
+                    -o -path '*/objects-*' -o -path '*/cache_keys/*' \
+                    -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' \
+                  ')' \
+                  -type f \
+                ')' \
+                -o -empty \
+              ')' -delete
+          fi
+
+      - name: Save ThirdParty cache
+        if: steps.cache-third-party.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TBUILD }}/ThirdParty
+          key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
+
+      - name: Save Libraries cache
+        if: steps.cache-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LIBS_BASE }}/*
+            !${{ env.LIBS_BASE }}/cache_keys
+            !${{ env.LIBS_BASE }}/[qQ]t[_-]*
+            ${{ env.LIBS_BASE }}/cache_keys/*
+            !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
+          key: ${{ steps.cache-libs.outputs.cache-primary-key }}
+
+      - name: Save Qt cache
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LIBS_BASE }}/[qQ]t[_-]*
+            ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
+          key: ${{ steps.cache-qt.outputs.cache-primary-key }}
+
+      - name: Build AyuGram
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+          call configure.bat ^
+            x86 ^
+            -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
+            -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
+            -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
+            -D DESKTOP_APP_ENABLE_LTO=%DESKTOP_APP_ENABLE_LTO%
+          cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          OUT="$TBUILD/$REPO_NAME/out/Release"
+          [ -d "$OUT" ] || { echo "::error::$OUT not found"; exit 1; }
+          mkdir -p pkg
+          for f in AyuGram.exe Telegram.exe; do
+            [ -f "$OUT/$f" ] && cp "$OUT/$f" pkg/AyuGram.exe && break
+          done
+          [ -f "$OUT/Updater.exe" ] && cp "$OUT/Updater.exe" pkg/ || true
+          [ -d "$OUT/modules" ] && cp -r "$OUT/modules" pkg/ || true
+          find pkg \( -name '*.pdb' -o -name '*.ilk' -o -name '*.exp' \) -print0 2>/dev/null | xargs -0 -r rm -f || true
+          cd pkg && 7z a -mx9 "../AyuGram-Windows-x86-${VERSION}.zip" . > /dev/null
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Windows-x86-${{ env.VERSION }}
+          path: "AyuGram-Windows-x86-${{ env.VERSION }}.zip"
           retention-days: 90
 
   # ---------------------------------------------------------------------
@@ -477,6 +747,11 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 360
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_num: ${{ steps.version.outputs.version_num }}
+      upstream_sha: ${{ steps.clone.outputs.upstream_sha }}
+
     steps:
       - name: Checkout builder repo
         uses: actions/checkout@v4
@@ -491,6 +766,7 @@ jobs:
           python-version: '3.12'
 
       - name: Clone AyuGramDesktop
+        id: clone
         run: |
           set -e
           BRANCH="${{ inputs.branch || 'dev' }}"
@@ -506,6 +782,9 @@ jobs:
 
           git -C "$HOME/TBuild/tdesktop" submodule update --init --depth=1
           git -C "$HOME/TBuild/tdesktop/cmake" submodule update --init --recursive --depth=1
+          UPSTREAM_SHA=$(git -C "$HOME/TBuild/tdesktop" rev-parse HEAD)
+          echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
+          echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
 
       - name: Apply patches
         run: |
@@ -514,6 +793,7 @@ jobs:
             --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
 
       - name: Read version & cache key
+        id: version
         run: |
           set -e
           VFILE="$HOME/TBuild/tdesktop/Telegram/build/version"
@@ -521,6 +801,8 @@ jobs:
           VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           {
             echo "macOS-libs-v1"
@@ -616,7 +898,7 @@ jobs:
   # ---------------------------------------------------------------------
   # Linux 32-bit (x86, optional / on demand)
   # ---------------------------------------------------------------------
-  linux-x86:
+  linux_x86:
     name: Linux x86 (32-bit)
     if: ${{ inputs.build_linux_x86 == true }}
     runs-on: ubuntu-24.04
@@ -695,8 +977,8 @@ jobs:
   # ---------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [windows, linux, macos, linux-x86]
-    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (inputs.create_release != false) }}
+    needs: [windows_x64, windows_x86, linux, macos, linux_x86]
+    if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (inputs.create_release != false) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -730,7 +1012,7 @@ jobs:
         id: tag
         env:
           VERSION: ${{ steps.info.outputs.version }}
-          UPSTREAM_SHA: ${{ needs.linux.outputs.upstream_sha }}
+          UPSTREAM_SHA: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha }}
         run: |
           set -e
           SHORTSHA="${UPSTREAM_SHA:0:7}"
