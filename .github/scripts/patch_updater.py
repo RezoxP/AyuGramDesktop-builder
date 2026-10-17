@@ -34,6 +34,7 @@ Intended to be invoked from the "Apply patches" step of
           python .github/scripts/patch_updater.py AyuGramDesktop
 """
 
+import re
 import sys
 import shutil
 from pathlib import Path
@@ -44,15 +45,15 @@ TARGET_REL = "Telegram/SourceFiles/core/update_checker.cpp"
 SENTINEL_INCLUDE = "#include <minizip/unzip.h>"
 SENTINEL_MARKER = "RezoxP patch: plain-zip update support"
 
-# Anchor: the function signature + the #ifndef gate that opens the body.
-# We insert the patch block immediately AFTER the #ifndef line so the patch
-# lives *inside* the existing TDESKTOP_DISABLE_AUTOUPDATE guard (no duplicate
-# #ifndef needed, and the patch is correctly disabled when autoupdate is off).
-FUNC_SIG = "bool UnpackUpdate(const QString &filepath) {\n#ifndef TDESKTOP_DISABLE_AUTOUPDATE"
+# Anchor regex: the function signature + the #ifndef gate that opens the body.
+# Matches regardless of CRLF or LF line endings and variable whitespace.
+FUNC_SIG_REGEX = re.compile(
+    r"bool\s+UnpackUpdate\s*\(\s*const\s+QString\s*&\s*filepath\s*\)\s*\{\s*\r?\n\s*#ifndef\s+TDESKTOP_DISABLE_AUTOUPDATE"
+)
 
 # Block to insert immediately after the #ifndef line.
 # Indentation is TABS to match the upstream file.
-PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
+PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
 #ifndef TDESKTOP_DISABLE_AUTOUPDATE
 \t// === RezoxP patch: plain-zip update support ===
 \t// If the downloaded file is a regular .zip (PK\\x03\\x04 magic), extract it
@@ -128,7 +129,7 @@ PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
 \t\t\t\t\t\t\tunzClose(uz);
 \t\t\t\t\t\t\tLOG(("Update Error: plain-zip: write failed for '%1'").arg(outPath));
 \t\t\t\t\t\t\treturn false;
-\t\t\t\t\t\t}
+\t\t\t\t\t}
 \t\t\t\t\t}
 \t\t\t\t\tconst int crcErr = unzCloseCurrentFile(uz);
 \t\t\t\t\tout.close();
@@ -138,8 +139,13 @@ PATCH_BLOCK = '''bool UnpackUpdate(const QString &filepath) {
 \t\t\t\t\t\treturn false;
 \t\t\t\t\t}
 #ifndef Q_OS_WIN
-\t\t\t\t\t// external_fa high 16 bits hold the Unix st_mode; bit 0100 = S_IXUSR.
-\t\t\t\t\tif ((info.external_fa >> 16) & 0100) {
+\t\t\t\t\t// external_fa high 16 bits hold Unix st_mode; bit 0100 = S_IXUSR.
+\t\t\t\t\t// Ensure executables and shared libraries are marked executable.
+\t\t\t\t\tif (((info.external_fa >> 16) & 0100)
+\t\t\t\t\t\t|| relName == u"AyuGram"_q
+\t\t\t\t\t\t|| relName == u"Telegram"_q
+\t\t\t\t\t\t|| relName == u"Updater"_q
+\t\t\t\t\t\t|| relName.endsWith(u".so"_q)) {
 \t\t\t\t\t\tQFileDevice::Permissions p = out.permissions();
 \t\t\t\t\t\tp |= QFileDevice::ExeOwner | QFileDevice::ExeUser | QFileDevice::ExeGroup | QFileDevice::ExeOther;
 \t\t\t\t\t\tout.setPermissions(p);
@@ -210,33 +216,39 @@ def find_target(root: Path) -> Path:
 
 def patch_file(target: Path) -> bool:
     """Apply the patch in place. Returns True if changes were made."""
-    content = target.read_text(encoding="utf-8")
+    raw = target.read_bytes()
+    is_crlf = b"\r\n" in raw
+    content = raw.decode("utf-8")
     original = content
+
+    newline = "\r\n" if is_crlf else "\n"
+    patch_block = PATCH_BLOCK_TEMPLATE.replace("\r\n", "\n").replace("\n", newline)
 
     # 1. Add the minizip include if missing.
     if SENTINEL_INCLUDE not in content:
         # Insert after the first existing #include line to keep the include
         # block grouped with the other system/library includes.
-        lines = content.split("\n")
+        lines = content.splitlines()
         insert_at = None
         for i, line in enumerate(lines):
-            if line.startswith("#include"):
+            if line.strip().startswith("#include"):
                 insert_at = i + 1
                 break
         if insert_at is None:
             raise RuntimeError("Could not find any #include line to anchor the minizip include against.")
         lines.insert(insert_at, SENTINEL_INCLUDE)
-        content = "\n".join(lines)
+        content = newline.join(lines) + newline
 
     # 2. Insert the zip-handling block at the start of UnpackUpdate().
     if SENTINEL_MARKER not in content:
-        if FUNC_SIG not in content:
+        match = FUNC_SIG_REGEX.search(content)
+        if not match:
             raise RuntimeError(
-                f"Could not find UnpackUpdate() signature: {FUNC_SIG!r}\n"
+                f"Could not find UnpackUpdate() signature matching regex: {FUNC_SIG_REGEX.pattern!r}\n"
                 "The upstream source may have changed. Inspect "
                 "Telegram/SourceFiles/core/update_checker.cpp manually."
             )
-        content = content.replace(FUNC_SIG, PATCH_BLOCK, 1)
+        content = content[:match.start()] + patch_block + content[match.end():]
 
     if content == original:
         return False
@@ -245,7 +257,7 @@ def patch_file(target: Path) -> bool:
     backup = target.with_suffix(target.suffix + ".bak")
     if not backup.exists():
         shutil.copy2(target, backup)
-    target.write_text(content, encoding="utf-8")
+    target.write_text(content, encoding="utf-8", newline=newline)
     return True
 
 
