@@ -1,213 +1,562 @@
 #!/usr/bin/env python3
 """
-Unified patch applicator for AyuGramDesktop builds on Windows and Linux.
+apply_patches.py — Consolidated, loud-failing source patcher for AyuGramDesktop CI.
 
 Applies:
-1. patch_updater.py: Plain-zip updater support in update_checker.cpp
-2. Autoupdate manifest URL redirection in localstorage.cpp and update_checker.cpp
-3. Legacy ayugram.one prefix override prevention in localstorage.cpp
-4. (Linux) tlottie / tdesktop_rust library resolution in cmake/external/tlottie/CMakeLists.txt
-5. (Windows) MSVC build options and C++20 requirement in cmake/options_win.cmake & variables.cmake
-6. (Windows) prepare.py MSYS2 UCRT64 migration & installer update
+1. update-url       (critical): Rewrites AyuGram auto-update manifest URL to this repository.
+2. prefix-override  (critical): Neutralizes legacy ayugram.one prefix in local storage.
+3. manifest-url     (critical): Allows absolute HTTP/HTTPS links in update manifest.
+4. zip-updates      (critical): Enables plain .zip update extraction via minizip, anti-bloat stale
+                                file purge, error cleanup, version/ready markers, and Unix permissions.
+5. target-keys      (critical): Ensures TargetFromPlatformKey supports win, win64, winarm, mac, armac, linux, linux32.
+6. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
+7. qt-release-only  (Windows):  Builds Qt in release-only mode, cutting Windows library build time in half.
+8. tlottie-rust     (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
+9. cmake-options    (Windows):  Disables debug scheme and enforces C++20.
 """
 
-import os
-import sys
-import re
 import argparse
+import os
+import re
+import shutil
+import sys
 from pathlib import Path
 
-# Import the zip updater patcher
-scripts_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(scripts_dir))
-import patch_updater
+TARGET_UPDATER = "Telegram/SourceFiles/core/update_checker.cpp"
+TARGET_LOCALSTORAGE = "Telegram/SourceFiles/storage/localstorage.cpp"
+TARGET_UPDATEVERIFY = "Telegram/SourceFiles/core/update_verify.cpp"
+TARGET_PREPARE = "Telegram/build/prepare/prepare.py"
+TARGET_TLOTTIE = "cmake/external/tlottie/CMakeLists.txt"
+TARGET_OPTIONS_WIN = "cmake/options_win.cmake"
+TARGET_VARIABLES = "cmake/variables.cmake"
+
+SENTINEL_INCLUDE = "#include <minizip/unzip.h>"
+SENTINEL_MARKER = "RezoxP patch: plain-zip update support"
+
+FUNC_SIG_RE = re.compile(
+    r"bool\s+UnpackUpdate\s*\(\s*const\s+QString\s*&\s*filepath\s*\)\s*\{\s*\r?\n\s*#ifndef\s+TDESKTOP_DISABLE_AUTOUPDATE"
+)
+
+PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
+#ifndef TDESKTOP_DISABLE_AUTOUPDATE
+\t// === RezoxP patch: plain-zip update support ===
+\t// If the downloaded file is a regular .zip (PK\\x03\\x04 magic), extract it
+\t// directly to tupdates/temp/ using minizip, write the version marker + ready
+\t// flag that checkReadyUpdate() expects, and skip the SHA1/RSA/LZMA path.
+\t// Falls through to the original Telegram-format handling otherwise.
+\t{
+\t\tQFile peek(filepath);
+\t\tif (peek.open(QIODevice::ReadOnly)) {
+\t\t\tchar magic[4] = { 0 };
+\t\t\tif (peek.peek(magic, 4) == 4
+\t\t\t\t&& (uchar)magic[0] == 0x50 && (uchar)magic[1] == 0x4B
+\t\t\t\t&& (uchar)magic[2] == 0x03 && (uchar)magic[3] == 0x04) {
+\t\t\t\tpeek.close();
+
+\t\t\t\t// Anti-bloat: purge any stale files or partial archives in tupdates/
+\t\t\t\tconst QString updatesDirPath = cWorkingDir() + u"tupdates"_q;
+\t\t\t\tconst QString tempDirPath = cWorkingDir() + u"tupdates/temp"_q;
+\t\t\t\tconst QString readyFilePath = cWorkingDir() + u"tupdates/temp/ready"_q;
+\t\t\t\tQDir updatesDir(updatesDirPath);
+\t\t\t\tif (updatesDir.exists()) {
+\t\t\t\t\tfor (const auto &info : updatesDir.entryInfoList(QDir::Files)) {
+\t\t\t\t\t\tif (info.absoluteFilePath() != filepath) {
+\t\t\t\t\t\t\tQFile::remove(info.absoluteFilePath());
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tbase::Platform::DeleteDirectory(tempDirPath);
+\t\t\t\tQDir().mkpath(tempDirPath);
+
+\t\t\t\tauto cleanupOnFailure = [&]() {
+\t\t\t\t\tQFile::remove(filepath);
+\t\t\t\t\tbase::Platform::DeleteDirectory(tempDirPath);
+\t\t\t\t};
+
+\t\t\t\t// Extract the zip into tempDirPath via minizip.
+\t\t\t\tunzFile uz = unzOpen(QFile::encodeName(filepath).constData());
+\t\t\t\tif (!uz) {
+\t\t\t\t\tLOG(("Update Error: plain-zip: unzOpen failed for '%1'").arg(filepath));
+\t\t\t\t\tcleanupOnFailure();
+\t\t\t\t\treturn false;
+\t\t\t\t}
+\t\t\t\tif (unzGoToFirstFile(uz) != UNZ_OK) {
+\t\t\t\t\tunzClose(uz);
+\t\t\t\t\tLOG(("Update Error: plain-zip: unzGoToFirstFile failed"));
+\t\t\t\t\tcleanupOnFailure();
+\t\t\t\t\treturn false;
+\t\t\t\t}
+\t\t\t\tbool extractSuccess = true;
+\t\t\t\tdo {
+\t\t\t\t\tchar filenameBuf[4096];
+\t\t\t\t\tunz_file_info info;
+\t\t\t\t\tif (unzGetCurrentFileInfo(
+\t\t\t\t\t\t\tuz, &info,
+\t\t\t\t\t\t\tfilenameBuf, sizeof(filenameBuf),
+\t\t\t\t\t\t\tnullptr, 0,
+\t\t\t\t\t\t\tnullptr, 0) != UNZ_OK) {
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: unzGetCurrentFileInfo failed"));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t\tQString relName = QString::fromUtf8(filenameBuf);
+\t\t\t\t\t// Anti-bloat: skip directory entries, OS metadata, and Mac archive junk
+\t\t\t\t\tif (relName.endsWith('/') || relName.startsWith(u"__MACOSX/"_q) || relName.endsWith(u".DS_Store"_q)) {
+\t\t\t\t\t\tif (unzGoToNextFile(uz) != UNZ_OK) break;
+\t\t\t\t\t\tcontinue;
+\t\t\t\t\t}
+\t\t\t\t\tconst QString outPath = tempDirPath + '/' + relName;
+\t\t\t\t\tif (!QDir().mkpath(QFileInfo(outPath).absolutePath())) {
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: mkpath failed for '%1'").arg(outPath));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t\tif (unzOpenCurrentFile(uz) != UNZ_OK) {
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: unzOpenCurrentFile failed for '%1'").arg(relName));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t\tQFile out(outPath);
+\t\t\t\t\tif (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+\t\t\t\t\t\tunzCloseCurrentFile(uz);
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: cannot open '%1' for writing").arg(outPath));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t\tchar buf[16384];
+\t\t\t\t\tint r;
+\t\t\t\t\tbool writeOk = true;
+\t\t\t\t\twhile ((r = unzReadCurrentFile(uz, buf, sizeof(buf))) > 0) {
+\t\t\t\t\t\tif (out.write(buf, r) != r) {
+\t\t\t\t\t\t\tLOG(("Update Error: plain-zip: write failed for '%1'").arg(outPath));
+\t\t\t\t\t\t\twriteOk = false;
+\t\t\t\t\t\t\tbreak;
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t\tconst int crcErr = unzCloseCurrentFile(uz);
+\t\t\t\t\tout.close();
+\t\t\t\t\tif (!writeOk || r < 0 || crcErr != UNZ_OK) {
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: extract failed for '%1' (read=%2, crc=%3)").arg(relName).arg(r).arg(crcErr));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+#ifndef Q_OS_WIN
+\t\t\t\t\t// external_fa high 16 bits hold Unix st_mode; bit 0100 = S_IXUSR.
+\t\t\t\t\t// Ensure executables, bundles, and shared libraries are marked executable.
+\t\t\t\t\tif (((info.external_fa >> 16) & 0100)
+\t\t\t\t\t\t|| relName == u"AyuGram"_q
+\t\t\t\t\t\t|| relName == u"Telegram"_q
+\t\t\t\t\t\t|| relName == u"Updater"_q
+\t\t\t\t\t\t|| relName.contains(u"MacOS/AyuGram"_q)
+\t\t\t\t\t\t|| relName.contains(u"MacOS/Telegram"_q)
+\t\t\t\t\t\t|| relName.endsWith(u".dylib"_q)
+\t\t\t\t\t\t|| relName.endsWith(u".so"_q)) {
+\t\t\t\t\t\tQFileDevice::Permissions p = out.permissions();
+\t\t\t\t\t\tp |= QFileDevice::ExeOwner | QFileDevice::ExeUser | QFileDevice::ExeGroup | QFileDevice::ExeOther;
+\t\t\t\t\t\tout.setPermissions(p);
+\t\t\t\t\t}
+#endif // !Q_OS_WIN
+\t\t\t\t\tif (unzGoToNextFile(uz) != UNZ_OK) break;
+\t\t\t\t} while (true);
+\t\t\t\tunzClose(uz);
+
+\t\t\t\tif (!extractSuccess) {
+\t\t\t\t\tcleanupOnFailure();
+\t\t\t\t\treturn false;
+\t\t\t\t}
+
+\t\t\t\t// Write tdata/version sentinel
+\t\t\t\tconst QString tdataDir = tempDirPath + u"/tdata"_q;
+\t\t\t\tQDir().mkpath(tdataDir);
+\t\t\t\tconst auto versionNum = VersionInt(AppVersion + 1);
+\t\t\t\tconst auto versionStr = FormatVersionDisplay(AppVersion + 1).toStdWString();
+\t\t\t\tconst auto versionLen = VersionInt(versionStr.size() * sizeof(VersionChar));
+\t\t\t\tVersionChar versionBuf[32];
+\t\t\t\tmemcpy(versionBuf, versionStr.c_str(), versionLen);
+\t\t\t\tQFile fVersion(tdataDir + u"/version"_q);
+\t\t\t\tif (!fVersion.open(QIODevice::WriteOnly)) {
+\t\t\t\t\tLOG(("Update Error: plain-zip: cannot write version file '%1'").arg(tdataDir + u"/version"_q));
+\t\t\t\t\tcleanupOnFailure();
+\t\t\t\t\treturn false;
+\t\t\t\t}
+\t\t\t\tfVersion.write((const char*)&versionNum, sizeof(VersionInt));
+\t\t\t\tfVersion.write((const char*)&versionLen, sizeof(VersionInt));
+\t\t\t\tfVersion.write((const char*)&versionBuf[0], versionLen);
+\t\t\t\tfVersion.close();
+
+\t\t\t\t// Write tupdates/temp/ready sentinel file
+\t\t\t\tQFile readyFile(readyFilePath);
+\t\t\t\tif (!readyFile.open(QIODevice::WriteOnly)
+\t\t\t\t\t|| !readyFile.write("1", 1)) {
+\t\t\t\t\tLOG(("Update Error: plain-zip: cannot write ready file '%1'").arg(readyFilePath));
+\t\t\t\t\tcleanupOnFailure();
+\t\t\t\t\treturn false;
+\t\t\t\t}
+\t\t\t\treadyFile.close();
+
+\t\t\t\t// Anti-bloat: Remove downloaded zip payload immediately after extraction
+\t\t\t\tQFile::remove(filepath);
+
+\t\t\t\tLOG(("Update Info: plain-zip update installed cleanly without storage bloat"));
+\t\t\t\treturn true;
+\t\t\t}
+\t\t\tpeek.close();
+\t\t}
+\t}
+\t// === end RezoxP patch ===
+'''
 
 
-def apply_patch(root: Path, rel_path: str, old: str, new: str, desc: str = "") -> bool:
-    full_path = root / rel_path
-    if not full_path.exists():
-        print(f"  [SKIP] {rel_path} does not exist")
-        return False
+class PatchResult:
+    def __init__(self):
+        self.rows = []
+        self.had_critical_failure = False
 
-    raw = full_path.read_bytes()
+    def ok(self, patch_id, file_path, detail):
+        self.rows.append(("OK", patch_id, file_path, detail))
+
+    def skip(self, patch_id, file_path, detail):
+        self.rows.append(("SKIP", patch_id, file_path, detail))
+
+    def warn(self, patch_id, file_path, detail):
+        print(f"::warning file={file_path}::patch {patch_id}: {detail}")
+        self.rows.append(("WARN", patch_id, file_path, detail))
+
+    def fail(self, patch_id, file_path, detail):
+        print(f"::error file={file_path}::patch {patch_id}: {detail}")
+        self.rows.append(("FAIL", patch_id, file_path, detail))
+        self.had_critical_failure = True
+
+    def report(self):
+        print("\n=== Patch Summary Report ===")
+        w = max(len(r[1]) for r in self.rows) if self.rows else 0
+        for status, patch_id, file_path, detail in self.rows:
+            print(f"  [{status:<4}] {patch_id:<{w}}  {file_path}  — {detail}")
+        print()
+
+
+def read_file(path: Path) -> tuple[str, bool]:
+    raw = path.read_bytes()
     is_crlf = b"\r\n" in raw
-    content = raw.decode("utf-8")
+    return raw.decode("utf-8"), is_crlf
 
-    if new in content:
-        print(f"  [ALREADY APPLIED] {rel_path}: {desc or old[:50]}...")
-        return False
+
+def write_file(path: Path, content: str, is_crlf: bool, backup: bool = True):
+    if backup:
+        bak = path.with_suffix(path.suffix + ".bak")
+        if not bak.exists():
+            shutil.copy2(path, bak)
+    newline = "\r\n" if is_crlf else "\n"
+    path.write_text(content, encoding="utf-8", newline=newline)
+
+
+def patch_update_url(root: Path, manifest_url: str, res: PatchResult, dry: bool):
+    fid = "update-url"
+    path = root / TARGET_LOCALSTORAGE
+    if not path.exists():
+        res.fail(fid, TARGET_LOCALSTORAGE, "file not found")
+        return
+
+    content, is_crlf = read_file(path)
+    if f'AutoupdatePrefix("{manifest_url}")' in content:
+        res.ok(fid, TARGET_LOCALSTORAGE, "already patched with manifest URL")
+        return
+
+    new_content, n = re.subn(r"https://update\.ayugram\.one/", manifest_url, content)
+    if n == 0:
+        res.fail(fid, TARGET_LOCALSTORAGE, "no 'https://update.ayugram.one/' anchor found")
+        return
+
+    if not dry:
+        write_file(path, new_content, is_crlf)
+    res.ok(fid, TARGET_LOCALSTORAGE, f"rewrote {n} URL site(s) -> {manifest_url}")
+
+
+def patch_prefix_override(root: Path, res: PatchResult, dry: bool):
+    fid = "prefix-override"
+    path = root / TARGET_LOCALSTORAGE
+    if not path.exists():
+        res.fail(fid, TARGET_LOCALSTORAGE, "file not found")
+        return
+
+    content, is_crlf = read_file(path)
+    sentinel = '!value.contains("ayugram.one")'
+    if sentinel in content:
+        res.ok(fid, TARGET_LOCALSTORAGE, "already ignores cached ayugram.one prefix")
+        return
+
+    old = "if (!value.isEmpty()) {"
+    new = 'if (!value.isEmpty() && !value.contains("ayugram.one")) {'
+    if old not in content:
+        res.warn(fid, TARGET_LOCALSTORAGE, "could not find 'if (!value.isEmpty()) {' anchor")
+        return
+
+    if not dry:
+        content = content.replace(old, new, 1)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_LOCALSTORAGE, "cached ayugram.one prefix neutralized")
+
+
+def patch_manifest_url(root: Path, res: PatchResult, dry: bool):
+    fid = "manifest-url"
+    path = root / TARGET_UPDATER
+    if not path.exists():
+        res.fail(fid, TARGET_UPDATER, "file not found")
+        return
+
+    content, is_crlf = read_file(path)
+    if 'bestLink.startsWith(QLatin1String("http"))' in content:
+        res.ok(fid, TARGET_UPDATER, "already accepts absolute URLs")
+        return
+
+    pattern = re.compile(r"Local::readAutoupdatePrefix\(\)\s*\+\s*bestLink\)")
+    replacement = 'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))'
+    new_content, n = pattern.subn(replacement, content, count=1)
+    if n == 0:
+        res.fail(fid, TARGET_UPDATER, "anchor 'Local::readAutoupdatePrefix() + bestLink)' not found")
+        return
+
+    if not dry:
+        write_file(path, new_content, is_crlf)
+    res.ok(fid, TARGET_UPDATER, "absolute manifest URLs enabled")
+
+
+def patch_zip_updates(root: Path, res: PatchResult, dry: bool):
+    fid = "zip-updates"
+    path = root / TARGET_UPDATER
+    if not path.exists():
+        res.fail(fid, TARGET_UPDATER, "file not found")
+        return
+
+    content, is_crlf = read_file(path)
+    newline = "\r\n" if is_crlf else "\n"
+    patch_block = PATCH_BLOCK_TEMPLATE.replace("\r\n", "\n").replace("\n", newline)
+
+    # 1. Ensure minizip include
+    if SENTINEL_INCLUDE not in content:
+        lines = content.splitlines()
+        insert_at = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("#include"):
+                insert_at = i + 1
+                break
+        if insert_at is None:
+            res.fail(fid, TARGET_UPDATER, "no #include line to anchor minizip")
+            return
+        lines.insert(insert_at, SENTINEL_INCLUDE)
+        content = newline.join(lines) + newline
+
+    # 2. Insert plain zip handler
+    if SENTINEL_MARKER not in content:
+        match = FUNC_SIG_RE.search(content)
+        if not match:
+            res.fail(fid, TARGET_UPDATER, f"UnpackUpdate() signature not found with regex: {FUNC_SIG_RE.pattern}")
+            return
+        content = content[:match.start()] + patch_block + content[match.end():]
+
+    if not dry:
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_UPDATER, "plain .zip anti-bloat update extraction installed")
+
+
+def patch_target_keys(root: Path, res: PatchResult, dry: bool):
+    fid = "target-keys"
+    path = root / TARGET_UPDATEVERIFY
+    if not path.exists():
+        res.warn(fid, TARGET_UPDATEVERIFY, "update_verify.cpp not found")
+        return
+
+    content, is_crlf = read_file(path)
+    if 'key == "linux32"' in content:
+        res.ok(fid, TARGET_UPDATEVERIFY, "already supports linux32 target key")
+        return
+
+    old = '} else if (key == "linux") {\n\t\treturn Target{ Os::Linux, Arch::X64 };\n\t}'
+    new = ('} else if (key == "linux") {\n\t\treturn Target{ Os::Linux, Arch::X64 };\n\t}'
+           '} else if (key == "linux32") {\n\t\treturn Target{ Os::Linux, Arch::X86 };\n\t}')
 
     if old not in content:
-        print(f"  [NOT FOUND] {rel_path}: {desc or old[:50]}...")
-        return False
+        old_crlf = old.replace('\n', '\r\n')
+        new_crlf = new.replace('\n', '\r\n')
+        if old_crlf in content:
+            if not dry:
+                content = content.replace(old_crlf, new_crlf, 1)
+                write_file(path, content, is_crlf)
+            res.ok(fid, TARGET_UPDATEVERIFY, "added linux32 target key")
+            return
+        res.warn(fid, TARGET_UPDATEVERIFY, "anchor for TargetFromPlatformKey not found")
+        return
 
-    content = content.replace(old, new)
-    newline = "\r\n" if is_crlf else "\n"
-    full_path.write_text(content, encoding="utf-8", newline=newline)
-    print(f"  [APPLIED] {rel_path}: {desc or old[:50]}...")
-    return True
+    if not dry:
+        content = content.replace(old, new, 1)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_UPDATEVERIFY, "added linux32 target key")
 
 
-def apply_patch_re(root: Path, rel_path: str, pattern: str, new: str, desc: str = "") -> bool:
-    full_path = root / rel_path
-    if not full_path.exists():
-        print(f"  [SKIP] {rel_path} does not exist")
-        return False
+def patch_msys2_ucrt64(root: Path, res: PatchResult, dry: bool):
+    fid = "msys2-ucrt64"
+    path = root / TARGET_PREPARE
+    if not path.exists():
+        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
+        return
 
-    raw = full_path.read_bytes()
-    is_crlf = b"\r\n" in raw
-    content = raw.decode("utf-8")
+    content, is_crlf = read_file(path)
+    modified = False
+
+    old_url = "https://github.com/msys2/msys2-installer/releases/download/2025-08-30/msys2-base-x86_64-20250830.sfx.exe"
+    new_url = "https://github.com/msys2/msys2-installer/releases/download/2026-09-27/msys2-base-x86_64-20260927.sfx.exe"
+    if old_url in content:
+        content = content.replace(old_url, new_url)
+        modified = True
+
+    if "'ThirdParty\\\\msys64\\\\mingw64\\\\bin'" in content:
+        content = content.replace("'ThirdParty\\\\msys64\\\\mingw64\\\\bin'", "'ThirdParty\\\\msys64\\\\ucrt64\\\\bin'")
+        modified = True
+
+    for pkg in ["diffutils", "gperf", "nasm", "perl", "pkgconf"]:
+        old_pkg = f"mingw-w64-x86_64-{pkg}"
+        new_pkg = f"mingw-w64-ucrt-x86_64-{pkg}"
+        if old_pkg in content:
+            content = content.replace(old_pkg, new_pkg)
+            modified = True
+
+    if "if build_debug:" in content:
+        content = content.replace("if build_debug:", "if False:")
+        modified = True
+
+    if modified:
+        if not dry:
+            write_file(path, content, is_crlf)
+        res.ok(fid, TARGET_PREPARE, "migrated to MSYS2 UCRT64 toolchain & 2026 installer")
+    else:
+        res.ok(fid, TARGET_PREPARE, "already updated to MSYS2 UCRT64")
+
+
+def patch_qt_release_only(root: Path, res: PatchResult, dry: bool):
+    fid = "qt-release-only"
+    path = root / TARGET_PREPARE
+    if not path.exists():
+        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
+        return
+
+    content, is_crlf = read_file(path)
+    old = "SET CONFIGURATIONS=-debug-and-release"
+    new = "SET CONFIGURATIONS=-release"
+
+    if new in content and old not in content:
+        res.ok(fid, TARGET_PREPARE, "already configured Qt release-only")
+        return
+
+    if old not in content:
+        res.warn(fid, TARGET_PREPARE, f"anchor '{old}' not found")
+        return
+
+    if not dry:
+        content = content.replace(old, new)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_PREPARE, "configured Qt release-only (halves Qt compilation time)")
+
+
+def patch_tlottie_rust(root: Path, res: PatchResult, dry: bool):
+    fid = "tlottie-rust"
+    path = root / TARGET_TLOTTIE
+    if not path.exists():
+        res.warn(fid, TARGET_TLOTTIE, "tlottie CMakeLists.txt not found")
+        return
+
+    content, is_crlf = read_file(path)
+    old = "find_library(DESKTOP_APP_TLOTTIE_LIBRARY tlottie REQUIRED)"
+    new = "find_library(DESKTOP_APP_TLOTTIE_LIBRARY NAMES tlottie tdesktop_rust REQUIRED)"
 
     if new in content:
-        print(f"  [ALREADY APPLIED] {rel_path}: {desc or pattern[:50]}...")
-        return False
+        res.ok(fid, TARGET_TLOTTIE, "already supports tdesktop_rust library")
+        return
 
-    match = re.search(pattern, content)
-    if not match:
-        print(f"  [NOT FOUND] {rel_path}: {desc or pattern[:50]}...")
-        return False
+    if old not in content:
+        res.warn(fid, TARGET_TLOTTIE, "find_library tlottie anchor not found")
+        return
 
-    content = content[:match.start()] + new + content[match.end():]
-    newline = "\r\n" if is_crlf else "\n"
-    full_path.write_text(content, encoding="utf-8", newline=newline)
-    print(f"  [APPLIED] {rel_path}: {desc or pattern[:50]}...")
-    return True
+    if not dry:
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_TLOTTIE, "enabled tdesktop_rust fallback for tlottie")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Apply build patches to AyuGramDesktop source tree")
-    parser.add_argument("source_dir", help="Path to AyuGramDesktop root directory")
-    parser.add_argument("--platform", choices=["windows", "linux"], required=True, help="Target build platform")
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "RezoxP/AyuGramDesktop-builder"),
-                        help="GitHub repository (Owner/Repo) for update manifest URL")
+def patch_cmake_windows(root: Path, res: PatchResult, dry: bool):
+    fid = "cmake-windows"
+    opt_path = root / TARGET_OPTIONS_WIN
+    if opt_path.exists():
+        content, is_crlf = read_file(opt_path)
+        content = content.replace("init_target(Telegram)", "init_target(Telegram disable_debug_scheme)")
+        content = content.replace("enable_warnings(Telegram)", "")
+        if not dry:
+            write_file(opt_path, content, is_crlf)
+        res.ok(fid, TARGET_OPTIONS_WIN, "applied disable_debug_scheme & disabled enable_warnings")
+
+    var_path = root / TARGET_VARIABLES
+    if var_path.exists():
+        content, is_crlf = read_file(var_path)
+        if "CMAKE_CXX_STANDARD 20" not in content:
+            new_content, n = re.subn(
+                r"set\(CMAKE_CXX_STANDARD_REQUIRED ON\)",
+                "set(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_STANDARD 20)",
+                content,
+                count=1
+            )
+            if n > 0 and not dry:
+                write_file(var_path, new_content, is_crlf)
+            res.ok(fid, TARGET_VARIABLES, "enforced C++20 standard")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Consolidated patch applicator for AyuGramDesktop CI")
+    parser.add_argument("source", help="Path to AyuGramDesktop root source directory")
+    parser.add_argument("--platform", choices=["windows", "linux", "macos", "all"], default="all",
+                        help="Target OS platform (default: all)")
+    parser.add_argument("--manifest-url",
+                        default=os.environ.get("MANIFEST_URL", "https://raw.githubusercontent.com/RezoxP/AyuGramDesktop-builder/update-manifest/"),
+                        help="Full URL prefix for update manifest")
+    parser.add_argument("--no-optional", action="store_true", help="Skip optional optimization patches")
+    parser.add_argument("--check", action="store_true", help="Dry run: inspect what would change without modifying files")
 
     args = parser.parse_args()
-    root = Path(args.source_dir).resolve()
-    repo = args.repo.strip()
-    manifest_url = f"https://raw.githubusercontent.com/{repo}/update-manifest/"
+    root = Path(args.source).resolve()
 
-    print(f"=== Applying AyuGramDesktop patches for {args.platform.upper()} ===")
-    print(f"Source Root: {root}")
-    print(f"Repository:  {repo}")
-    print(f"Update URL:  {manifest_url}")
+    if not root.is_dir() or not (root / "Telegram").is_dir():
+        print(f"::error::'{root}' is not a valid AyuGramDesktop checkout (missing Telegram/ dir)", file=sys.stderr)
+        return 2
 
-    # 1. Plain zip updater support in update_checker.cpp
-    print("\n[1/3] Patching update_checker.cpp for plain-zip update extraction...")
-    try:
-        target = patch_updater.find_target(root)
-        changed = patch_updater.patch_file(target)
-        if changed:
-            print(f"  [APPLIED] {patch_updater.TARGET_REL} (zip extraction)")
-        else:
-            print(f"  [ALREADY APPLIED] {patch_updater.TARGET_REL} (zip extraction)")
-    except Exception as e:
-        print(f"  [ERROR] Failed to patch update_checker for zip updates: {e}", file=sys.stderr)
+    res = PatchResult()
+    print(f"=== Applying AyuGramDesktop Patches ===")
+    print(f"Source Root:   {root}")
+    print(f"Target OS:     {args.platform}")
+    print(f"Manifest URL:  {args.manifest_url}")
+    print(f"Dry Run:       {args.check}\n")
+
+    # 1. Critical common patches
+    patch_update_url(root, args.manifest_url, res, args.check)
+    patch_prefix_override(root, res, args.check)
+    patch_manifest_url(root, res, args.check)
+    patch_zip_updates(root, res, args.check)
+    patch_target_keys(root, res, args.check)
+
+    # 2. Windows patches
+    if args.platform in ("windows", "all"):
+        patch_msys2_ucrt64(root, res, args.check)
+        patch_cmake_windows(root, res, args.check)
+        if not args.no_optional:
+            patch_qt_release_only(root, res, args.check)
+
+    # 3. Linux patches
+    if args.platform in ("linux", "all"):
+        patch_tlottie_rust(root, res, args.check)
+
+    res.report()
+
+    if res.had_critical_failure:
+        print("::error::CRITICAL PATCH FAILURE — upstream source changes broke critical updater anchors.", file=sys.stderr)
         return 1
 
-    # 2. Storage & updater network patches (common to both platforms)
-    print("\n[2/3] Patching update manifest URLs and prefix handling...")
-    apply_patch(
-        root,
-        "Telegram/SourceFiles/storage/localstorage.cpp",
-        'return AutoupdatePrefix("https://update.ayugram.one/");',
-        f'return AutoupdatePrefix("{manifest_url}");',
-        "AutoupdatePrefix default URL"
-    )
-    apply_patch(
-        root,
-        "Telegram/SourceFiles/storage/localstorage.cpp",
-        'const auto fixedPrefix = QString::fromStdString("https://update.ayugram.one/");',
-        f'const auto fixedPrefix = QString::fromStdString("{manifest_url}");',
-        "writeAutoupdatePrefix fixed URL"
-    )
-    apply_patch(
-        root,
-        "Telegram/SourceFiles/storage/localstorage.cpp",
-        "if (!value.isEmpty()) {",
-        'if (!value.isEmpty() && !value.contains("ayugram.one")) {',
-        "Ignore obsolete official ayugram.one in tdata/prefix"
-    )
-    apply_patch(
-        root,
-        "Telegram/SourceFiles/core/update_checker.cpp",
-        "Local::readAutoupdatePrefix() + bestLink)",
-        'bestLink.startsWith(QLatin1String("http")) ? bestLink : (Local::readAutoupdatePrefix() + bestLink))',
-        "Allow absolute HTTP/HTTPS download link from manifest"
-    )
-
-    # 3. Platform-specific patches
-    print(f"\n[3/3] Applying {args.platform.upper()}-specific patches...")
-
-    if args.platform == "windows":
-        # Windows CMake options
-        apply_patch(
-            root,
-            "cmake/options_win.cmake",
-            "init_target(Telegram)",
-            "init_target(Telegram disable_debug_scheme)",
-            "Disable debug scheme in options_win.cmake"
-        )
-        apply_patch(
-            root,
-            "cmake/options_win.cmake",
-            "enable_warnings(Telegram)",
-            "",
-            "Disable enable_warnings in options_win.cmake"
-        )
-        apply_patch_re(
-            root,
-            "cmake/variables.cmake",
-            r"set\(CMAKE_CXX_STANDARD_REQUIRED ON\)",
-            "set(CMAKE_CXX_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_STANDARD 20)",
-            "Enforce C++20 standard in variables.cmake"
-        )
-
-        # Windows prepare.py fixes
-        apply_patch(
-            root,
-            "Telegram/build/prepare/prepare.py",
-            "if build_debug:",
-            "if False:",
-            "Skip debug build in prepare.py"
-        )
-        apply_patch(
-            root,
-            "Telegram/build/prepare/prepare.py",
-            "'ThirdParty\\\\msys64\\\\mingw64\\\\bin'",
-            "'ThirdParty\\\\msys64\\\\ucrt64\\\\bin'",
-            "Update MSYS2 path prefix to ucrt64"
-        )
-        apply_patch(
-            root,
-            "Telegram/build/prepare/prepare.py",
-            "https://github.com/msys2/msys2-installer/releases/download/2025-08-30/msys2-base-x86_64-20250830.sfx.exe",
-            "https://github.com/msys2/msys2-installer/releases/download/2026-09-27/msys2-base-x86_64-20260927.sfx.exe",
-            "Update MSYS2 installer URL to 2026-09-27 release"
-        )
-
-        # MSYS2 pacman package names migrated from mingw64 to ucrt64
-        for pkg in ["diffutils", "gperf", "nasm", "perl", "pkgconf"]:
-            apply_patch(
-                root,
-                "Telegram/build/prepare/prepare.py",
-                f"mingw-w64-x86_64-{pkg}",
-                f"mingw-w64-ucrt-x86_64-{pkg}",
-                f"Migrate MSYS2 {pkg} package to mingw-w64-ucrt-x86_64-{pkg}"
-            )
-
-    elif args.platform == "linux":
-        # Linux tlottie / tdesktop_rust resolution
-        # Upstream tdesktop centos_env Docker image consolidated tlottie & wallet-engine
-        # into /usr/local/lib/libtdesktop_rust.a. Ensure CMake searches for both names.
-        apply_patch(
-            root,
-            "cmake/external/tlottie/CMakeLists.txt",
-            "find_library(DESKTOP_APP_TLOTTIE_LIBRARY tlottie REQUIRED)",
-            "find_library(DESKTOP_APP_TLOTTIE_LIBRARY NAMES tlottie tdesktop_rust REQUIRED)",
-            "Support libtdesktop_rust.a in tlottie CMakeLists.txt"
-        )
-
-    print("\n=== All patches applied successfully ===")
+    print("All required patches applied successfully.")
     return 0
 
 

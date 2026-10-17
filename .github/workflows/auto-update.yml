@@ -1,0 +1,118 @@
+name: Auto update
+
+# Watches upstream AyuGram/AyuGramDesktop changelog and dispatches a full build
+# whenever a new version entry is published in changelog.txt.
+#
+# Design notes:
+#   * Updates are triggered based on changelog releases rather than raw commits,
+#     avoiding unnecessary builds on work-in-progress or non-release commits.
+#   * Scheduled automated builds always build with Link-Time Optimization (LTO) enabled.
+#   * Concurrency group plus in-progress guard prevents duplicate runs.
+
+on:
+  schedule:
+    # Every 6 hours at minute 23
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ayugram-auto-update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check upstream changelog & dispatch build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Fetch and parse upstream changelog
+        id: upstream
+        run: |
+          set -e
+          CHANGELOG_URL="https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt"
+          echo "Fetching changelog from $CHANGELOG_URL..."
+          CONTENT=$(curl -fsSL "$CHANGELOG_URL")
+
+          CONTENT="$CONTENT" python3 -c "
+          import os, sys, re
+
+          content = os.environ.get('CONTENT', '')
+          match = re.search(r'^([0-9]+(\.[0-9]+)+(\s+[a-z]+)?)\s*\(([^)]+)\)', content, re.MULTILINE)
+          if not match:
+              print('::error::Could not parse version from changelog.txt', file=sys.stderr)
+              sys.exit(1)
+
+          full_ver = match.group(1).strip()
+          clean_ver = full_ver.split()[0]
+          date = match.group(4).strip()
+
+          print(f'Detected changelog version: {clean_ver} ({date})')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'version={clean_ver}\n')
+              f.write(f'full_version={full_ver}\n')
+              f.write(f'date={date}\n')
+          "
+
+      - name: Read latest release in repository
+        id: last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // ""' 2>/dev/null || true)
+          # Strip leading 'v'
+          RELEASE_VER=$(echo "$RELEASE_TAG" | sed 's/^v//' | cut -d'-' -f1)
+          echo "version=${RELEASE_VER:-}" >> $GITHUB_OUTPUT
+          if [ -n "$RELEASE_VER" ]; then
+            echo "Latest repository release: v$RELEASE_VER (tag: $RELEASE_TAG)"
+          else
+            echo "No previous release found in repository — fresh repository."
+          fi
+
+      - name: Skip if a build is already running or queued
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          BUSY=$(gh run list --workflow=build.yml --json status --limit 30 \
+            | python3 -c "import json,sys; runs=json.load(sys.stdin); print(sum(1 for r in runs if r['status'] in ('in_progress','queued')))")
+          echo "busy=$BUSY" >> $GITHUB_OUTPUT
+          echo "Active build.yml runs: $BUSY"
+
+      - name: Dispatch build
+        if: steps.last.outputs.version != steps.upstream.outputs.version && steps.guard.outputs.busy == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_VER: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -e
+          echo "New changelog version detected: $UPSTREAM_VER (current released: ${{ steps.last.outputs.version || 'none' }})"
+          echo "Dispatching build.yml with enable_lto=true on schedule..."
+          gh workflow run build.yml \
+            --ref "$GITHUB_REF_NAME" \
+            -f branch=dev \
+            -f enable_lto=true \
+            -f create_release=true
+          echo "Dispatched build.yml successfully for changelog version $UPSTREAM_VER."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Changelog-Based Auto-Update Check"
+            echo ""
+            echo "| Parameter | Value |"
+            echo "|---|---|"
+            echo "| Upstream Changelog Version | \`${{ steps.upstream.outputs.version }}\` (${{ steps.upstream.outputs.date }}) |"
+            echo "| Current Released Version | \`${{ steps.last.outputs.version || '(none)' }}\` |"
+            echo "| Active Builder Runs | ${{ steps.guard.outputs.busy || '0' }} |"
+            echo "| LTO Optimization | \`true\` |"
+            echo "| Outcome | ${{ steps.last.outputs.version != steps.upstream.outputs.version && steps.guard.outputs.busy == '0' && 'Dispatched new release build' || 'Up-to-date (no action needed)' }} |"
+          } >> $GITHUB_STEP_SUMMARY

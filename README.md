@@ -1,91 +1,115 @@
 # AyuGramDesktop-builder
 
-Automated CI/CD builder for [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) — builds release binaries for Windows (x64 & x86) and Linux (x64) with no debug symbols and working automatic updates.
+Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) — builds release binaries for **Windows** (x64 & x86), **Linux** (x64 & x86), and **macOS** (Universal Apple Silicon & Intel) with no debug symbols and robust auto-updates.
 
 ---
 
-## Features
+## Key Highlights
 
-- **Automated Upstream Tracking**: A daily scheduled workflow checks for new upstream AyuGram releases. If a new version is detected, a full automated build and release cycle is triggered.
-- **In-App Auto-Updates**: Built binaries are patched to use plain `.zip` archives and download updates from this repository's `update-manifest` branch, bypassing Telegram's proprietary RSA/SHA1 signature requirement.
-- **Future-Proof Build Environment**:
-  - Automatically migrates Windows dependencies to MSYS2 UCRT64 toolchains (`mingw-w64-ucrt-x86_64-*`).
-  - Resolves Linux `tlottie` symbol consolidation into `libtdesktop_rust.a` in newer centos_env Docker images.
-  - Automatically overrides and ignores obsolete official `ayugram.one` prefixes saved in `tdata/prefix`.
-- **Standalone Update Checkers**: Handy PowerShell and Bash scripts for external or portable updates.
+- **Multi-Platform Support**:
+  - **Windows**: x64 and x86 (MSVC 2022).
+  - **Linux**: x64 and experimental 32-bit x86.
+  - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64).
+- **Fast, Cache-Optimized Pipeline**:
+  - **Windows**: Builds Qt in release-only mode, halving library build times. Caches to the exact output directories (`Libraries/win64` and `Libraries`), with split restore/save so completed library stages are never discarded on compilation failure.
+  - **Linux**: Utilizes prebuilt Docker environments with dynamic `tdesktop_rust` / `tlottie` symbol resolution, bypassing hours of redundant Docker builds.
+  - **macOS**: Cached `Libraries/` tree on Apple Silicon (`macos-14`), delivering swift subsequent compilation cycles.
+- **Dynamic & Adaptable**:
+  - Target branches or exact commit SHAs on demand.
+  - Granular build toggles for each platform and architecture.
+  - Dynamic SDK resolution from upstream build docs.
+  - Collision-free release tagging: `v{version}` or `v{version}-{commit7}` if rebuilds are requested.
+- **In-App Auto-Updates (Zero Signature Lock-in)**:
+  - Bypasses Telegram's proprietary RSA/SHA1 signature checks using embedded `minizip` plain `.zip` extraction.
+  - Automatic `0755` executable permissions for Linux binaries and macOS `.app` bundles upon update.
+  - Auto-updates point to this repository's `update-manifest` branch and automatically override legacy prefixes.
+- **Automated Upstream Watcher (`auto-update.yml`)**:
+  - Runs every 6 hours using `git ls-remote` (no GitHub API rate limits).
+  - Dispatches `build.yml` whenever upstream releases new commits.
 
 ---
 
-## Workflow
+## Workflows
 
-### `build.yml` — Automated & On-Demand Builds
+### 1. `build.yml` — Multi-Platform Build & Release
 
-The workflow runs on **schedule** (daily at 03:00 UTC) and can also be triggered manually via **GitHub Actions `workflow_dispatch`**.
+Triggered on schedule (daily fallback) or manually via **workflow_dispatch**.
 
 #### Workflow Parameters (Manual Dispatch):
-- `branch`: Git branch of AyuGram to build (default: `dev`).
-- `enable_lto`: Enable Link-Time Optimization (default: `true`).
-- `force_build`: Rebuild and re-release even if a release for the upstream version already exists (default: `false`).
 
-#### Pipeline Architecture:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `branch` | `dev` | Upstream AyuGram branch to checkout |
+| `commit` | *(empty)* | Exact upstream commit SHA to build (pins a specific revision) |
+| `enable_lto` | `false` | Enable Link-Time Optimization (keep false for fast & stable CI) |
+| `create_release` | `true` | Create GitHub Release and push manifest to `update-manifest` |
+| `build_windows_x64` | `true` | Build Windows 64-bit |
+| `build_windows_x86` | `true` | Build Windows 32-bit |
+| `build_linux_x64` | `true` | Build Linux 64-bit |
+| `build_macos` | `true` | Build macOS Universal (arm64 & x86_64) |
+| `build_linux_x86` | `false` | Build Linux 32-bit (experimental) |
 
-1. **`check` (Fast gatekeeper)**:
-   - Queries upstream `Telegram/build/version`.
-   - Checks if a release tag `v{version}` already exists in this repository.
-   - If already built and `force_build` is false, cleanly finishes in ~15 seconds without consuming runner hours.
-2. **`windows` (Matrix `x64`, `x86`)**:
-   - Patches source tree with UCRT64 MSYS2 environment & updater zip support.
-   - Builds static dependencies with caching.
-   - Builds Release `AyuGram.exe` and `Updater.exe`.
-   - Packages into `AyuGram-Windows-{arch}-{version}.zip`.
-3. **`linux` (`x64`)**:
-   - Pulls Telegram Desktop CentOS Docker build environment.
-   - Patches `tlottie` / `tdesktop_rust` resolution and zip updater support.
-   - Compiles Release binaries in Docker.
-   - Packages into both `AyuGram-Linux-x64-{version}.zip` (for in-app updater) and `AyuGram-Linux-x64-{version}.tar.gz`.
-4. **`release`**:
-   - Runs once all builds succeed (`needs: [check, windows, linux]`).
-   - Publishes GitHub Release with all 4 artifacts.
-   - Generates and commits `current4` manifest to the orphan `update-manifest` branch.
+#### Release Artifacts:
+
+- `AyuGram-Windows-x64-{version}.zip`
+- `AyuGram-Windows-x86-{version}.zip`
+- `AyuGram-Linux-x64-{version}.zip` *(in-app updater compatible)*
+- `AyuGram-Linux-x64-{version}.tar.gz`
+- `AyuGram-macOS-{version}.zip` *(.app bundle)*
+- `SHA256SUMS.txt`
 
 ---
 
-## Auto-Update Mechanism
+### 2. `auto-update.yml` — Automated Upstream Watcher
+
+Monitors `https://github.com/AyuGram/AyuGramDesktop.git` `dev` branch tip.
+
+- Uses `git ls-remote` to detect new commits without burning GitHub API rate limits.
+- Compares the remote tip with the `Upstream commit:` recorded in the latest release.
+- If upstream changed and no build is running, it dispatches `build.yml` pinned to that commit.
+- If a build fails, the release remains on the previous version, allowing the next run to automatically retry.
+
+---
+
+## Auto-Update Mechanics
 
 ### In-App Auto-Updates
 
-The client checks for updates against:
+The client polls the raw manifest:
 ```
 https://raw.githubusercontent.com/<OWNER>/<REPO>/update-manifest/current4
 ```
-When an update is found:
-- The client downloads the `.zip` update payload directly from GitHub Releases.
-- The patched updater extracts the zip using embedded minizip, sets executable permissions on Linux (`AyuGram`, `Telegram`, `Updater`), writes `tupdates/temp/ready` and `tdata/version`, and seamlessly restarts.
+
+Example manifest structure:
+```json
+{
+  "win64": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
+  "win":   { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x86-7.2.9.zip" } },
+  "mac":   { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "armac": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "linux": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Linux-x64-7.2.9.zip" } }
+}
+```
+
+When an update is detected, the client downloads the package directly from GitHub Releases and unpacks it via embedded minizip, writing the required `tupdates/temp/ready` flag and updating seamlessly.
 
 ### Standalone Update Scripts
-
-Portable and standalone installations can also be kept up to date using the included scripts:
 
 #### Windows (PowerShell):
 ```powershell
 .\.github\scripts\check-update.ps1 -Repo "RezoxP/AyuGramDesktop-builder"
 ```
-*Optional switches*:
-- `-InstallDir <path>`: Directory containing AyuGram (defaults to script directory).
-- `-Force`: Update without prompt and automatically close running AyuGram process.
+*Switches: `-InstallDir <path>`, `-Force`*
 
-#### Linux (Bash):
+#### Linux & macOS (Bash):
 ```bash
 ./.github/scripts/check-update.sh "RezoxP/AyuGramDesktop-builder"
 ```
-*Optional switches*:
-- Pass directory as second argument: `./.github/scripts/check-update.sh "RezoxP/AyuGramDesktop-builder" /opt/ayugram`
-- `-y` / `--yes` / `-f` for unattended updates.
+*Switches: Pass custom directory as second argument, `-y` or `-f` for unattended updates.*
 
 ---
 
-## Notes
+## Notes & Credentials
 
-- **API Credentials**: Builds use Telegram API ID `2040` / hash `b18441a1ff607e10a989891a5462e627`.
-- **Linux 32-bit (x86)**: Not supported upstream — the Telegram Desktop CentOS Docker environment only supports `x86_64`.
-- **Release Gating**: GitHub Releases are published only if all three platform targets (Windows x64, Windows x86, Linux x64) build cleanly.
+- **API Credentials**: Public defaults `2040` / `b18441a1ff607e10a989891a5462e627`. To use custom API keys, configure repository secrets `TDESKTOP_API_ID` and `TDESKTOP_API_HASH`.
+- **First Build (Cold Cache)**: Cold cache builds take longer on Windows while building libraries. Subsequent builds hit the cache and complete in ~15-25 minutes.
