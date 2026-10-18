@@ -90,8 +90,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          BUSY=$(gh run list --workflow=build.yml --json status --limit 30 \
-            | python3 -c "import json,sys; runs=json.load(sys.stdin); print(sum(1 for r in runs if r['status'] in ('in_progress','queued')))")
+          BUSY=$(gh run list -R "$GITHUB_REPOSITORY" --workflow=build.yml --json status --limit 30 \
+            | python3 -c "import json, sys; s = sys.stdin.read().strip() or '[]'; runs = json.loads(s); print(sum(1 for r in runs if r.get('status') in ('in_progress', 'queued')))")
           echo "busy=$BUSY" >> $GITHUB_OUTPUT
           echo "Active build.yml runs: $BUSY"
 
@@ -105,6 +105,7 @@ jobs:
           echo "New changelog version detected: $UPSTREAM_VER (current released: ${{ steps.last.outputs.version || 'none' }})"
           echo "Dispatching build.yml..."
           gh workflow run build.yml \
+            -R "$GITHUB_REPOSITORY" \
             --ref "${GITHUB_REF_NAME:-main}" \
             -f branch=dev \
             -f enable_lto=false \
