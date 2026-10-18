@@ -109,8 +109,7 @@ jobs:
             --ref "${GITHUB_REF_NAME:-main}" \
             -f branch=dev \
             -f enable_lto=false \
-            -f create_release=true \
-            -f build_linux_x86=true
+            -f create_release=true
           echo "Dispatched build.yml successfully for changelog version $UPSTREAM_VER."
 
       - name: Summary

@@ -45,7 +45,6 @@ Triggered manually via **workflow_dispatch** or automatically by `auto-update.ym
 | `build_windows_x86` | `true` | Build Windows 32-bit |
 | `build_linux_x64` | `true` | Build Linux 64-bit |
 | `build_macos` | `true` | Build macOS Universal (arm64 & x86_64) |
-| `build_linux_x86` | `false` | Build Linux 32-bit (experimental) |
 
 #### Release Artifacts:
 

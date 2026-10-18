@@ -8,13 +8,12 @@ Applies:
 3. manifest-url     (critical): Allows absolute HTTP/HTTPS links in update manifest.
 4. zip-updates      (critical): Enables plain .zip update extraction via minizip, anti-bloat stale
                                 file purge, zip-slip protection, version/ready markers, and Unix permissions.
-5. target-keys      (critical): Ensures TargetFromPlatformKey supports win, win64, winarm, mac, armac, linux, linux32.
-6. mac-updater      (macOS):    Dynamically resolves AyuGram.app bundle in checkReadyUpdate instead of Telegram.app.
-7. tg-owt-win       (Windows):  Fixes upstream Windows cmd line continuation bug (\\ -> ^) in tg_owt stage.
-8. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
-9. qt-release-only  (Windows):  Builds Qt in release-only mode, halving Windows library build time.
-10. tlottie-rust    (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
-11. cmake-options   (Windows):  Disables debug scheme and enforces C++20.
+5. mac-updater      (macOS):    Dynamically resolves AyuGram.app bundle in checkReadyUpdate instead of Telegram.app.
+6. tg-owt-win       (Windows):  Fixes upstream Windows cmd line continuation bug (\\ -> ^) in tg_owt stage.
+7. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
+8. qt-release-only  (Windows):  Builds Qt in release-only mode, halving Windows library build time.
+9. tlottie-rust     (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
+10. cmake-options   (Windows):  Disables debug scheme and enforces C++20.
 """
 
 import argparse
@@ -26,7 +25,6 @@ from pathlib import Path
 
 TARGET_UPDATER = "Telegram/SourceFiles/core/update_checker.cpp"
 TARGET_LOCALSTORAGE = "Telegram/SourceFiles/storage/localstorage.cpp"
-TARGET_UPDATEVERIFY = "Telegram/SourceFiles/core/update_verify.cpp"
 TARGET_PREPARE = "Telegram/build/prepare/prepare.py"
 TARGET_TLOTTIE = "cmake/external/tlottie/CMakeLists.txt"
 TARGET_OPTIONS_WIN = "cmake/options_win.cmake"
@@ -410,40 +408,6 @@ def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
     res.ok(fid, TARGET_UPDATER, "patched macOS updater to dynamically resolve AyuGram.app bundle")
 
 
-def patch_target_keys(root: Path, res: PatchResult, dry: bool):
-    fid = "target-keys"
-    path = root / TARGET_UPDATEVERIFY
-    if not path.exists():
-        res.warn(fid, TARGET_UPDATEVERIFY, "update_verify.cpp not found")
-        return
-
-    content, is_crlf = read_file(path)
-    if 'key == "linux32"' in content:
-        res.ok(fid, TARGET_UPDATEVERIFY, "already supports linux32 target key")
-        return
-
-    old = '} else if (key == "linux") {\n\t\treturn Target{ Os::Linux, Arch::X64 };\n\t}'
-    new = ('} else if (key == "linux") {\n\t\treturn Target{ Os::Linux, Arch::X64 };\n\t}'
-           '} else if (key == "linux32") {\n\t\treturn Target{ Os::Linux, Arch::X86 };\n\t}')
-
-    if old not in content:
-        old_crlf = old.replace('\n', '\r\n')
-        new_crlf = new.replace('\n', '\r\n')
-        if old_crlf in content:
-            if not dry:
-                content = content.replace(old_crlf, new_crlf, 1)
-                write_file(path, content, is_crlf)
-            res.ok(fid, TARGET_UPDATEVERIFY, "added linux32 target key")
-            return
-        res.warn(fid, TARGET_UPDATEVERIFY, "anchor for TargetFromPlatformKey not found")
-        return
-
-    if not dry:
-        content = content.replace(old, new, 1)
-        write_file(path, content, is_crlf)
-    res.ok(fid, TARGET_UPDATEVERIFY, "added linux32 target key")
-
-
 def patch_prepare_tg_owt(root: Path, res: PatchResult, dry: bool):
     fid = "tg-owt-win-syntax"
     path = root / TARGET_PREPARE
@@ -628,7 +592,6 @@ def main() -> int:
     patch_prefix_override(root, res, args.check)
     patch_manifest_url(root, res, args.check)
     patch_zip_updates(root, res, args.check)
-    patch_target_keys(root, res, args.check)
 
     # 2. macOS specific patches
     if args.platform in ("macos", "all"):

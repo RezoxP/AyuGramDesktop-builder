@@ -1,6 +1,6 @@
 name: Build AyuGram Desktop
 
-# Builds AyuGram Desktop for Windows (x64 & x86), Linux (x64 & optional x86), and macOS.
+# Builds AyuGram Desktop for Windows (x64 & x86), Linux (x64), and macOS.
 # Creates a GitHub Release with all platform artifacts and updates the auto-update manifest.
 
 on:
@@ -41,11 +41,6 @@ on:
         default: true
       build_macos:
         description: 'Build macOS (Universal / Apple Silicon & Intel)'
-        required: false
-        type: boolean
-        default: true
-      build_linux_x86:
-        description: 'Build Linux x86 32-bit (experimental)'
         required: false
         type: boolean
         default: true
@@ -939,85 +934,11 @@ jobs:
           retention-days: 90
 
   # ---------------------------------------------------------------------
-  # Linux 32-bit (x86, optional / on demand)
-  # ---------------------------------------------------------------------
-  linux_x86:
-    name: Linux x86 (32-bit)
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_x86 != false }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-
-    steps:
-      - name: Checkout builder repo
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Clone AyuGramDesktop
-        run: |
-          BRANCH="${{ inputs.branch || 'dev' }}"
-          git clone --filter=blob:none --depth 1 --branch "$BRANCH" \
-            "https://github.com/${{ env.AYUGRAM_REPO }}.git" tdesktop
-          git -C tdesktop submodule update --init --recursive --depth=1
-          git -C tdesktop/cmake submodule update --init --recursive --depth=1
-
-      - name: Apply patches
-        run: |
-          python3 .github/scripts/apply_patches.py tdesktop \
-            --platform linux \
-            --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
-
-      - name: Read version
-        run: |
-          VFILE="tdesktop/Telegram/build/version"
-          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      - name: Build AyuGram 32-bit
-        run: |
-          docker run --rm --platform linux/386 \
-            -v "$PWD/tdesktop:/usr/src/tdesktop" \
-            i386/debian:bookworm linux32 /bin/bash -c "
-              apt-get update && apt-get install -y --no-install-recommends \
-                cmake build-essential ninja-build python3 pkg-config git \
-                libgl1-mesa-dev libx11-dev libxext-dev libxrandr-dev
-              cd /usr/src/tdesktop/Telegram
-              python3 configure.py -D CMAKE_BUILD_TYPE=Release -D DESKTOP_APP_USE_PACKAGED=ON
-              cmake --build ../out --config Release --parallel \$(nproc)
-            " || echo "::warning::32-bit Linux build experimental or partial"
-
-      - name: Package
-        run: |
-          mkdir -p pkg-x86
-          OUT="tdesktop/out/Release"
-          for bin in AyuGram Telegram; do
-            [ -f "$OUT/$bin" ] && cp "$OUT/$bin" pkg-x86/AyuGram && break
-          done
-          if [ -f pkg-x86/AyuGram ]; then
-            chmod +x pkg-x86/*
-            (cd pkg-x86 && zip -r -9 "../AyuGram-Linux-x86-${VERSION}.zip" .)
-            tar -czf "AyuGram-Linux-x86-${VERSION}.tar.gz" -C pkg-x86 .
-          fi
-
-      - name: Upload
-        if: hashFiles('AyuGram-Linux-x86-*.zip') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: AyuGram-Linux-x86-${{ env.VERSION }}
-          path: |
-            AyuGram-Linux-x86-${{ env.VERSION }}.zip
-            AyuGram-Linux-x86-${{ env.VERSION }}.tar.gz
-          retention-days: 90
-
-  # ---------------------------------------------------------------------
   # Release: runs when enabled builds succeed
   # ---------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [windows_x64, windows_x86, linux, macos, linux_x86]
+    needs: [windows_x64, windows_x86, linux, macos]
     if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (inputs.create_release != false) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1121,8 +1042,6 @@ jobs:
               'armac': { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } },
               'linux': { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Linux-x64-{v}.zip' } }
           }
-          if os.path.exists(f'release/AyuGram-Linux-x86-{v}.zip'):
-              m['linux32'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Linux-x86-{v}.zip' } }
           with open('manifest-repo/current4', 'w', encoding='utf-8') as f:
               json.dump(m, f, indent=2)
           "
