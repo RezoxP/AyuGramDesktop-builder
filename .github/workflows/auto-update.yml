@@ -6,7 +6,7 @@ name: Auto update
 # Design notes:
 #   * Updates are triggered based on changelog releases rather than raw commits,
 #     avoiding unnecessary builds on work-in-progress or non-release commits.
-#   * Scheduled automated builds use enable_lto=false for fast, stable, and memory-safe CI.
+#   * Automated builds use enable_lto=false for fast, stable, and memory-safe CI.
 #   * Concurrency group plus in-progress guard prevents duplicate runs.
 
 on:
@@ -14,6 +14,13 @@ on:
     # Every 6 hours at minute 23
     - cron: '23 */6 * * *'
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/auto-update.yml'
+      - '.github/workflows/build.yml'
+      - '.github/scripts/**'
 
 permissions:
   contents: read
@@ -98,7 +105,7 @@ jobs:
           echo "New changelog version detected: $UPSTREAM_VER (current released: ${{ steps.last.outputs.version || 'none' }})"
           echo "Dispatching build.yml..."
           gh workflow run build.yml \
-            --ref "$GITHUB_REF_NAME" \
+            --ref "${GITHUB_REF_NAME:-main}" \
             -f branch=dev \
             -f enable_lto=false \
             -f create_release=true
