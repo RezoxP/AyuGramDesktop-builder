@@ -48,7 +48,7 @@ on:
         description: 'Build Linux x86 32-bit (experimental)'
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -943,17 +943,13 @@ jobs:
   # ---------------------------------------------------------------------
   linux_x86:
     name: Linux x86 (32-bit)
-    if: ${{ inputs.build_linux_x86 == true }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux_x86 != false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
       - name: Checkout builder repo
         uses: actions/checkout@v4
-
-      - name: Setup multiarch Docker environment
-        run: |
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -984,9 +980,10 @@ jobs:
         run: |
           docker run --rm --platform linux/386 \
             -v "$PWD/tdesktop:/usr/src/tdesktop" \
-            i386/ubuntu:22.04 /bin/bash -c "
-              apt-get update && apt-get install -y cmake build-essential ninja-build \
-                libgl1-mesa-dev libx11-dev libxext-dev libxrandr-dev pkg-config
+            i386/debian:bookworm linux32 /bin/bash -c "
+              apt-get update && apt-get install -y --no-install-recommends \
+                cmake build-essential ninja-build python3 pkg-config git \
+                libgl1-mesa-dev libx11-dev libxext-dev libxrandr-dev
               cd /usr/src/tdesktop/Telegram
               python3 configure.py -D CMAKE_BUILD_TYPE=Release -D DESKTOP_APP_USE_PACKAGED=ON
               cmake --build ../out --config Release --parallel \$(nproc)

@@ -566,6 +566,7 @@ def patch_tlottie_rust(root: Path, res: PatchResult, dry: bool):
         res.warn(fid, TARGET_TLOTTIE, "find_library tlottie anchor not found")
         return
 
+    content = content.replace(old, new)
     if not dry:
         write_file(path, content, is_crlf)
     res.ok(fid, TARGET_TLOTTIE, "enabled tdesktop_rust fallback for tlottie")
