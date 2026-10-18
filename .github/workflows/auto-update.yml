@@ -6,7 +6,7 @@ name: Auto update
 # Design notes:
 #   * Updates are triggered based on changelog releases rather than raw commits,
 #     avoiding unnecessary builds on work-in-progress or non-release commits.
-#   * Scheduled automated builds always build with Link-Time Optimization (LTO) enabled.
+#   * Scheduled automated builds use enable_lto=false for fast, stable, and memory-safe CI.
 #   * Concurrency group plus in-progress guard prevents duplicate runs.
 
 on:
@@ -36,12 +36,14 @@ jobs:
           set -e
           CHANGELOG_URL="https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt"
           echo "Fetching changelog from $CHANGELOG_URL..."
-          CONTENT=$(curl -fsSL "$CHANGELOG_URL")
+          curl -fsSL "$CHANGELOG_URL" -o changelog.txt
 
-          CONTENT="$CONTENT" python3 -c "
+          python3 -c "
           import os, sys, re
 
-          content = os.environ.get('CONTENT', '')
+          with open('changelog.txt', 'r', encoding='utf-8', errors='ignore') as f:
+              content = f.read(65536)
+
           match = re.search(r'^([0-9]+(\.[0-9]+)+(\s+[a-z]+)?)\s*\(([^)]+)\)', content, re.MULTILINE)
           if not match:
               print('::error::Could not parse version from changelog.txt', file=sys.stderr)
@@ -53,7 +55,7 @@ jobs:
 
           print(f'Detected changelog version: {clean_ver} ({date})')
 
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
               f.write(f'version={clean_ver}\n')
               f.write(f'full_version={full_ver}\n')
               f.write(f'date={date}\n')
@@ -94,11 +96,11 @@ jobs:
         run: |
           set -e
           echo "New changelog version detected: $UPSTREAM_VER (current released: ${{ steps.last.outputs.version || 'none' }})"
-          echo "Dispatching build.yml with enable_lto=true on schedule..."
+          echo "Dispatching build.yml..."
           gh workflow run build.yml \
             --ref "$GITHUB_REF_NAME" \
             -f branch=dev \
-            -f enable_lto=true \
+            -f enable_lto=false \
             -f create_release=true
           echo "Dispatched build.yml successfully for changelog version $UPSTREAM_VER."
 
@@ -113,6 +115,5 @@ jobs:
             echo "| Upstream Changelog Version | \`${{ steps.upstream.outputs.version }}\` (${{ steps.upstream.outputs.date }}) |"
             echo "| Current Released Version | \`${{ steps.last.outputs.version || '(none)' }}\` |"
             echo "| Active Builder Runs | ${{ steps.guard.outputs.busy || '0' }} |"
-            echo "| LTO Optimization | \`true\` |"
             echo "| Outcome | ${{ steps.last.outputs.version != steps.upstream.outputs.version && steps.guard.outputs.busy == '0' && 'Dispatched new release build' || 'Up-to-date (no action needed)' }} |"
           } >> $GITHUB_STEP_SUMMARY

@@ -61,7 +61,7 @@ env:
   AYUGRAM_REPO: AyuGram/AyuGramDesktop
   TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || '2040' }}
   TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || 'b18441a1ff607e10a989891a5462e627' }}
-  DESKTOP_APP_ENABLE_LTO: ${{ (github.event_name == 'schedule' || github.event.inputs.enable_lto == 'true' || inputs.enable_lto == true) && 'ON' || 'OFF' }}
+  DESKTOP_APP_ENABLE_LTO: ${{ (github.event.inputs.enable_lto == 'true' || inputs.enable_lto == true) && 'ON' || 'OFF' }}
 
 jobs:
 
@@ -150,7 +150,7 @@ jobs:
             fi
           fi
 
-          git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
+          git -C "$TBUILD/$REPO_NAME" submodule update --init --recursive --depth=1
           UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -183,7 +183,7 @@ jobs:
           echo "Using Windows SDK: $SDK"
 
           {
-            echo "v3-libs-x64"
+            echo "v4-libs-x64"
             cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
             cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
@@ -207,8 +207,8 @@ jobs:
         id: cache-third-party
         with:
           path: ${{ env.TBUILD }}/ThirdParty
-          key: Windows-x64-third-party-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-third-party-v3-
+          key: Windows-x64-third-party-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-third-party-v4-
 
       - name: Libraries cache (restore)
         uses: actions/cache/restore@v4
@@ -220,8 +220,8 @@ jobs:
             !${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/*
             !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x64-libs-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-libs-v3-
+          key: Windows-x64-libs-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-libs-v4-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -230,8 +230,8 @@ jobs:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x64-qt-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-qt-v3-
+          key: Windows-x64-qt-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x64-qt-v4-
 
       - name: Build libraries
         env:
@@ -421,7 +421,7 @@ jobs:
             fi
           fi
 
-          git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
+          git -C "$TBUILD/$REPO_NAME" submodule update --init --recursive --depth=1
           UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -454,7 +454,7 @@ jobs:
           echo "Using Windows SDK: $SDK"
 
           {
-            echo "v3-libs-x86"
+            echo "v4-libs-x86"
             cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
             cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
@@ -478,8 +478,8 @@ jobs:
         id: cache-third-party
         with:
           path: ${{ env.TBUILD }}/ThirdParty
-          key: Windows-x86-third-party-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-third-party-v3-
+          key: Windows-x86-third-party-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-third-party-v4-
 
       - name: Libraries cache (restore)
         uses: actions/cache/restore@v4
@@ -491,8 +491,8 @@ jobs:
             !${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/*
             !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x86-libs-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-libs-v3-
+          key: Windows-x86-libs-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-libs-v4-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -501,8 +501,8 @@ jobs:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x86-qt-v3-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-qt-v3-
+          key: Windows-x86-qt-v4-${{ env.CACHE_KEY }}
+          restore-keys: Windows-x86-qt-v4-
 
       - name: Build libraries
         env:
@@ -654,7 +654,7 @@ jobs:
             fi
           fi
 
-          git -C tdesktop submodule update --init --depth=1
+          git -C tdesktop submodule update --init --recursive --depth=1
           git -C tdesktop/cmake submodule update --init --recursive --depth=1
           wait $DOCKER_PID
           echo "UPSTREAM_SHA=$(git -C tdesktop rev-parse HEAD)" >> $GITHUB_ENV
@@ -756,6 +756,17 @@ jobs:
       - name: Checkout builder repo
         uses: actions/checkout@v4
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /Library/Developer/CommandLineTools
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform/Library/Developer/CoreSimulator
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform
+          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/XRSimulator.platform
+          xcrun simctl erase all 2>/dev/null || true
+          brew cleanup -s 2>/dev/null || true
+          df -h
+
       - name: Install dependencies via Homebrew
         run: |
           brew install git automake libtool cmake wget pkg-config gnu-tar ninja nasm meson
@@ -780,7 +791,7 @@ jobs:
             fi
           fi
 
-          git -C "$HOME/TBuild/tdesktop" submodule update --init --depth=1
+          git -C "$HOME/TBuild/tdesktop" submodule update --init --recursive --depth=1
           git -C "$HOME/TBuild/tdesktop/cmake" submodule update --init --recursive --depth=1
           UPSTREAM_SHA=$(git -C "$HOME/TBuild/tdesktop" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
@@ -805,11 +816,23 @@ jobs:
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           {
-            echo "macOS-libs-v1"
+            echo "macOS-libs-v2"
             cat "$HOME/TBuild/tdesktop/Telegram/build/prepare/prepare.py"
             cat "$HOME/TBuild/tdesktop/Telegram/build/qt_version.py" 2>/dev/null || true
           } | shasum -a 256 | awk '{ print $1 }' > CACHE_KEY.txt
           echo "CACHE_KEY=$(cat CACHE_KEY.txt)" >> $GITHUB_ENV
+
+      - name: Generate stub DesktopPrivate
+        run: |
+          mkdir -p "$HOME/TBuild/DesktopPrivate"
+          random_key() {
+            printf -- '[REDACTED:ssh_private_key]\n%s\n-----END RSA PRIVATE KEY-----\n' \
+              "$(head -c 96 /dev/urandom | base64 | tr -d '\n')"
+          }
+          printf 'const char *PrivateKey = "%s";\nconst char *PrivateBetaKey = "%s";\n' \
+            "$(random_key)" "$(random_key)" > "$HOME/TBuild/DesktopPrivate/packer_private.h"
+          printf 'static const char *AlphaPrivateKey = "%s";\n' \
+            "$(random_key)" > "$HOME/TBuild/DesktopPrivate/alpha_private.h"
 
       - name: Libraries cache (restore)
         uses: actions/cache/restore@v4
@@ -821,8 +844,8 @@ jobs:
             !~/TBuild/Libraries/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/*
             !~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-libs-v1-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-libs-v1-
+          key: macOS-arm64-libs-v2-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-libs-v2-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -831,13 +854,33 @@ jobs:
           path: |
             ~/TBuild/Libraries/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-qt-v1-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-qt-v1-
+          key: macOS-arm64-qt-v2-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-qt-v2-
 
       - name: Build libraries
         run: |
           cd "$HOME/TBuild"
           ./tdesktop/Telegram/build/prepare/mac.sh
+
+      - name: Free disk space before caching
+        run: |
+          if [ -d "$HOME/TBuild/Libraries" ]; then
+            find "$HOME/TBuild/Libraries" \
+              '(' \
+                '(' \
+                  ! '(' \
+                    -name '*.a' -o -name '*.dylib' \
+                    -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' \
+                    -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' \
+                    -o -path '*/objects-*' -o -path '*/cache_keys/*' \
+                    -o -path '*/patches/*' \
+                  ')' \
+                  -type f \
+                ')' \
+                -o -empty \
+              ')' -delete 2>/dev/null || true
+          fi
+          df -h
 
       - name: Save Libraries cache
         if: steps.cache-mac-libs.outputs.cache-hit != 'true'
@@ -922,7 +965,7 @@ jobs:
           BRANCH="${{ inputs.branch || 'dev' }}"
           git clone --filter=blob:none --depth 1 --branch "$BRANCH" \
             "https://github.com/${{ env.AYUGRAM_REPO }}.git" tdesktop
-          git -C tdesktop submodule update --init --depth=1
+          git -C tdesktop submodule update --init --recursive --depth=1
           git -C tdesktop/cmake submodule update --init --recursive --depth=1
 
       - name: Apply patches

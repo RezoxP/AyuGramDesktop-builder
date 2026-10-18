@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-apply_patches.py — Consolidated, loud-failing source patcher for AyuGramDesktop CI.
+apply_patches.py — Consolidated, robust source patcher for AyuGramDesktop CI.
 
 Applies:
 1. update-url       (critical): Rewrites AyuGram auto-update manifest URL to this repository.
 2. prefix-override  (critical): Neutralizes legacy ayugram.one prefix in local storage.
 3. manifest-url     (critical): Allows absolute HTTP/HTTPS links in update manifest.
 4. zip-updates      (critical): Enables plain .zip update extraction via minizip, anti-bloat stale
-                                file purge, error cleanup, version/ready markers, and Unix permissions.
+                                file purge, zip-slip protection, version/ready markers, and Unix permissions.
 5. target-keys      (critical): Ensures TargetFromPlatformKey supports win, win64, winarm, mac, armac, linux, linux32.
-6. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
-7. qt-release-only  (Windows):  Builds Qt in release-only mode, cutting Windows library build time in half.
-8. tlottie-rust     (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
-9. cmake-options    (Windows):  Disables debug scheme and enforces C++20.
+6. mac-updater      (macOS):    Dynamically resolves AyuGram.app bundle in checkReadyUpdate instead of Telegram.app.
+7. tg-owt-win       (Windows):  Fixes upstream Windows cmd line continuation bug (\\ -> ^) in tg_owt stage.
+8. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
+9. qt-release-only  (Windows):  Builds Qt in release-only mode, halving Windows library build time.
+10. tlottie-rust    (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
+11. cmake-options   (Windows):  Disables debug scheme and enforces C++20.
 """
 
 import argparse
@@ -100,7 +102,15 @@ PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
 \t\t\t\t\t\tbreak;
 \t\t\t\t\t}
 \t\t\t\t\tQString relName = QString::fromUtf8(filenameBuf);
-\t\t\t\t\t// Anti-bloat: skip directory entries, OS metadata, and Mac archive junk
+\t\t\t\t\t// Security & anti-bloat:
+\t\t\t\t\t// 1. Guard against path traversal (Zip Slip)
+\t\t\t\t\tif (relName.startsWith('/') || relName.startsWith('\\\\')
+\t\t\t\t\t\t|| relName.contains(u"../"_q) || relName.contains(u"..\\\\"_q)) {
+\t\t\t\t\t\tLOG(("Update Error: plain-zip: insecure path in archive: '%1'").arg(relName));
+\t\t\t\t\t\textractSuccess = false;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t\t// 2. Skip directory entries, OS metadata, and Mac archive junk
 \t\t\t\t\tif (relName.endsWith('/') || relName.startsWith(u"__MACOSX/"_q) || relName.endsWith(u".DS_Store"_q)) {
 \t\t\t\t\t\tif (unzGoToNextFile(uz) != UNZ_OK) break;
 \t\t\t\t\t\tcontinue;
@@ -131,7 +141,7 @@ PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
 \t\t\t\t\t\t\tLOG(("Update Error: plain-zip: write failed for '%1'").arg(outPath));
 \t\t\t\t\t\t\twriteOk = false;
 \t\t\t\t\t\t\tbreak;
-\t\t\t\t\t\t}
+\t\t\t\t\t}
 \t\t\t\t\t}
 \t\t\t\t\tconst int crcErr = unzCloseCurrentFile(uz);
 \t\t\t\t\tout.close();
@@ -149,6 +159,7 @@ PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
 \t\t\t\t\t\t|| relName == u"Updater"_q
 \t\t\t\t\t\t|| relName.contains(u"MacOS/AyuGram"_q)
 \t\t\t\t\t\t|| relName.contains(u"MacOS/Telegram"_q)
+\t\t\t\t\t\t|| relName.contains(u"Contents/Frameworks/Updater"_q)
 \t\t\t\t\t\t|| relName.endsWith(u".dylib"_q)
 \t\t\t\t\t\t|| relName.endsWith(u".so"_q)) {
 \t\t\t\t\t\tQFileDevice::Permissions p = out.permissions();
@@ -359,6 +370,46 @@ def patch_zip_updates(root: Path, res: PatchResult, dry: bool):
     res.ok(fid, TARGET_UPDATER, "plain .zip anti-bloat update extraction installed")
 
 
+def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
+    fid = "mac-updater-path"
+    path = root / TARGET_UPDATER
+    if not path.exists():
+        res.warn(fid, TARGET_UPDATER, "update_checker.cpp not found")
+        return
+
+    content, is_crlf = read_file(path)
+    if "u\"tupdates/temp/\"_q + appBundle" in content or "cExeName().endsWith(u\".app\"_q)" in content:
+        res.ok(fid, TARGET_UPDATER, "already patched for dynamic app bundle updater path")
+        return
+
+    old = 'QString curUpdater = (cExeDir() + cExeName() + u"/Contents/Frameworks/Updater"_q);\n\tQFileInfo updater(cWorkingDir() + u"tupdates/temp/Telegram.app/Contents/Frameworks/Updater"_q);'
+    new = (
+        'const auto appBundle = cExeName().endsWith(u".app"_q) ? cExeName() : (cExeName() + u".app"_q);\n'
+        '\tQString curUpdater = (cExeDir() + appBundle + u"/Contents/Frameworks/Updater"_q);\n'
+        '\tQFileInfo updater(cWorkingDir() + u"tupdates/temp/"_q + appBundle + u"/Contents/Frameworks/Updater"_q);\n'
+        '\tif (!updater.exists()) {\n'
+        '\t\tupdater.setFile(cWorkingDir() + u"tupdates/temp/AyuGram.app/Contents/Frameworks/Updater"_q);\n'
+        '\t}'
+    )
+
+    if old not in content:
+        old_crlf = old.replace('\n', '\r\n')
+        new_crlf = new.replace('\n', '\r\n')
+        if old_crlf in content:
+            if not dry:
+                content = content.replace(old_crlf, new_crlf, 1)
+                write_file(path, content, is_crlf)
+            res.ok(fid, TARGET_UPDATER, "patched macOS updater to dynamically resolve AyuGram.app bundle")
+            return
+        res.warn(fid, TARGET_UPDATER, "anchor for macOS Telegram.app updater path not found")
+        return
+
+    if not dry:
+        content = content.replace(old, new, 1)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_UPDATER, "patched macOS updater to dynamically resolve AyuGram.app bundle")
+
+
 def patch_target_keys(root: Path, res: PatchResult, dry: bool):
     fid = "target-keys"
     path = root / TARGET_UPDATEVERIFY
@@ -391,6 +442,45 @@ def patch_target_keys(root: Path, res: PatchResult, dry: bool):
         content = content.replace(old, new, 1)
         write_file(path, content, is_crlf)
     res.ok(fid, TARGET_UPDATEVERIFY, "added linux32 target key")
+
+
+def patch_prepare_tg_owt(root: Path, res: PatchResult, dry: bool):
+    fid = "tg-owt-win-syntax"
+    path = root / TARGET_PREPARE
+    if not path.exists():
+        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
+        return
+
+    content, is_crlf = read_file(path)
+    idx = content.find("stage('tg_owt'")
+    if idx == -1:
+        res.warn(fid, TARGET_PREPARE, "stage('tg_owt') not found in prepare.py")
+        return
+
+    idx2 = content.find("cmake -B out", idx)
+    if idx2 == -1:
+        res.warn(fid, TARGET_PREPARE, "cmake -B out not found in stage('tg_owt')")
+        return
+
+    end_idx = content.find("cmake --build out", idx2)
+    if end_idx == -1:
+        res.warn(fid, TARGET_PREPARE, "cmake --build out not found in stage('tg_owt')")
+        return
+
+    chunk = content[idx2:end_idx]
+    if "cmake -B out ^" in chunk:
+        res.ok(fid, TARGET_PREPARE, "already patched tg_owt Windows cmd syntax")
+        return
+
+    fixed_chunk = re.sub(r'\\\s*(\r?\n)', r'^\1', chunk)
+    if fixed_chunk == chunk:
+        res.ok(fid, TARGET_PREPARE, "no backslash continuation found in tg_owt stage")
+        return
+
+    new_content = content[:idx2] + fixed_chunk + content[end_idx:]
+    if not dry:
+        write_file(path, new_content, is_crlf)
+    res.ok(fid, TARGET_PREPARE, "fixed tg_owt Windows cmd line continuations (\\ -> ^)")
 
 
 def patch_msys2_ucrt64(root: Path, res: PatchResult, dry: bool):
@@ -539,14 +629,19 @@ def main() -> int:
     patch_zip_updates(root, res, args.check)
     patch_target_keys(root, res, args.check)
 
-    # 2. Windows patches
+    # 2. macOS specific patches
+    if args.platform in ("macos", "all"):
+        patch_mac_updater(root, res, args.check)
+
+    # 3. Windows patches
     if args.platform in ("windows", "all"):
+        patch_prepare_tg_owt(root, res, args.check)
         patch_msys2_ucrt64(root, res, args.check)
         patch_cmake_windows(root, res, args.check)
         if not args.no_optional:
             patch_qt_release_only(root, res, args.check)
 
-    # 3. Linux patches
+    # 4. Linux patches
     if args.platform in ("linux", "all"):
         patch_tlottie_rust(root, res, args.check)
 
