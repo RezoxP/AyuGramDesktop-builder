@@ -271,6 +271,7 @@ jobs:
       - name: Save ThirdParty cache
         if: steps.cache-third-party.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: ${{ env.TBUILD }}/ThirdParty
           key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
@@ -278,6 +279,7 @@ jobs:
       - name: Save Libraries cache
         if: steps.cache-libs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ${{ env.LIBS_BASE }}/*
@@ -290,6 +292,7 @@ jobs:
       - name: Save Qt cache
         if: steps.cache-qt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
@@ -542,6 +545,7 @@ jobs:
       - name: Save ThirdParty cache
         if: steps.cache-third-party.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: ${{ env.TBUILD }}/ThirdParty
           key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
@@ -549,6 +553,7 @@ jobs:
       - name: Save Libraries cache
         if: steps.cache-libs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ${{ env.LIBS_BASE }}/*
@@ -561,6 +566,7 @@ jobs:
       - name: Save Qt cache
         if: steps.cache-qt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
@@ -754,6 +760,13 @@ jobs:
       - name: Free disk space
         run: |
           sudo rm -rf /Library/Developer/CommandLineTools
+          ACTIVE_XCODE=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for x in /Applications/Xcode_*.app; do
+            if [ -d "$x" ] && [ "$x" != "$ACTIVE_XCODE" ]; then
+              echo "Removing inactive Xcode: $x"
+              sudo rm -rf "$x"
+            fi
+          done
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform/Library/Developer/CoreSimulator
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform
           sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform
@@ -859,9 +872,23 @@ jobs:
           cd "$HOME/TBuild"
           ./tdesktop/Telegram/build/prepare/mac.sh
 
+      - name: Free disk space before caching
+        run: |
+          if [ -d "$HOME/TBuild/Libraries" ]; then
+            # 1. Strip all .git folders inside Libraries to reclaim ~10 GB
+            find "$HOME/TBuild/Libraries" -type d -name ".git" -prune -exec rm -rf {} + 2>/dev/null || true
+
+            # 2. Delete intermediate compilation object files (*.o, *.obj)
+            # This safely frees ~25 GB without touching executables (moc, rcc, uic, qmake),
+            # libraries (*.a, *.dylib), headers, or configs.
+            find "$HOME/TBuild/Libraries" -type f \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
+          fi
+          df -h
+
       - name: Save Libraries cache
         if: steps.cache-mac-libs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ~/TBuild/Libraries/*
@@ -875,6 +902,7 @@ jobs:
       - name: Save Qt cache
         if: steps.cache-mac-qt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             ~/TBuild/Libraries/[qQ]t[_-]*
