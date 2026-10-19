@@ -1,6 +1,6 @@
 # AyuGramDesktop-builder
 
-Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) — builds release binaries for **Windows** (x64 & x86), **Linux** (x64 & x86), and **macOS** (Universal Apple Silicon & Intel) with robust, future-proof, zero-bloat in-app auto-updates.
+Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) — builds release binaries for **Windows** (x64 & x86), **Linux** (x64), and **macOS** (Universal Apple Silicon & Intel) with robust, future-proof, zero-bloat in-app auto-updates.
 
 ---
 
@@ -8,7 +8,7 @@ Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://
 
 - **Multi-Platform Support**:
   - **Windows**: x64 and x86 (MSVC 2022).
-  - **Linux**: x64 (glibc-compatible Docker `centos_env`) and optional 32-bit x86.
+  - **Linux**: x64 (glibc-compatible Docker `centos_env`).
   - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64).
 - **Fast, Cache-Optimized Pipeline**:
   - **Windows**: Builds Qt in release-only mode, halving library build times. Caches to the exact output directories (`Libraries/win64` and `Libraries`), with split restore/save so completed library stages are never discarded on compilation failure.
