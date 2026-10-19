@@ -811,7 +811,7 @@ jobs:
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           {
-            echo "macOS-libs-v2"
+            echo "macOS-libs-v3"
             cat "$HOME/TBuild/tdesktop/Telegram/build/prepare/prepare.py"
             cat "$HOME/TBuild/tdesktop/Telegram/build/qt_version.py" 2>/dev/null || true
           } | shasum -a 256 | awk '{ print $1 }' > CACHE_KEY.txt
@@ -837,10 +837,11 @@ jobs:
             ~/TBuild/Libraries/*
             !~/TBuild/Libraries/cache_keys
             !~/TBuild/Libraries/[qQ]t[_-]*
+            !~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/*
             !~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-libs-v2-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-libs-v2-
+          key: macOS-arm64-libs-v3-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-libs-v3-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -848,34 +849,15 @@ jobs:
         with:
           path: |
             ~/TBuild/Libraries/[qQ]t[_-]*
+            ~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-qt-v2-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-qt-v2-
+          key: macOS-arm64-qt-v3-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-qt-v3-
 
       - name: Build libraries
         run: |
           cd "$HOME/TBuild"
           ./tdesktop/Telegram/build/prepare/mac.sh
-
-      - name: Free disk space before caching
-        run: |
-          if [ -d "$HOME/TBuild/Libraries" ]; then
-            find "$HOME/TBuild/Libraries" \
-              '(' \
-                '(' \
-                  ! '(' \
-                    -name '*.a' -o -name '*.dylib' \
-                    -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' \
-                    -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' \
-                    -o -path '*/objects-*' -o -path '*/cache_keys/*' \
-                    -o -path '*/patches/*' \
-                  ')' \
-                  -type f \
-                ')' \
-                -o -empty \
-              ')' -delete 2>/dev/null || true
-          fi
-          df -h
 
       - name: Save Libraries cache
         if: steps.cache-mac-libs.outputs.cache-hit != 'true'
@@ -885,6 +867,7 @@ jobs:
             ~/TBuild/Libraries/*
             !~/TBuild/Libraries/cache_keys
             !~/TBuild/Libraries/[qQ]t[_-]*
+            !~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/*
             !~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
           key: ${{ steps.cache-mac-libs.outputs.cache-primary-key }}
@@ -895,6 +878,7 @@ jobs:
         with:
           path: |
             ~/TBuild/Libraries/[qQ]t[_-]*
+            ~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
           key: ${{ steps.cache-mac-qt.outputs.cache-primary-key }}
 
