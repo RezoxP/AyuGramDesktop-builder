@@ -730,13 +730,18 @@ jobs:
           (cd pkg && zip -r -9 "../AyuGram-Linux-x64-${VERSION}.zip" .)
           tar -czf "AyuGram-Linux-x64-${VERSION}.tar.gz" -C pkg .
 
-      - name: Upload
+      - name: Upload zip
         uses: actions/upload-artifact@v4
         with:
           name: AyuGram-Linux-x64-${{ env.VERSION }}
-          path: |
-            AyuGram-Linux-x64-${{ env.VERSION }}.zip
-            AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz
+          path: "AyuGram-Linux-x64-${{ env.VERSION }}.zip"
+          retention-days: 90
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-Linux-tar-${{ env.VERSION }}
+          path: "AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz"
           retention-days: 90
 
   # ---------------------------------------------------------------------
