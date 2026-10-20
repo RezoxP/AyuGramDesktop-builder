@@ -829,9 +829,10 @@ jobs:
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           {
-            echo "macOS-libs-v3"
+            echo "macOS-libs-v4"
             cat "$HOME/TBuild/tdesktop/Telegram/build/prepare/prepare.py"
             cat "$HOME/TBuild/tdesktop/Telegram/build/qt_version.py" 2>/dev/null || true
+            find "$HOME/TBuild/tdesktop/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
           } | shasum -a 256 | awk '{ print $1 }' > CACHE_KEY.txt
           echo "CACHE_KEY=$(cat CACHE_KEY.txt)" >> $GITHUB_ENV
 
@@ -858,8 +859,8 @@ jobs:
             !~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/*
             !~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-libs-v3-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-libs-v3-
+          key: macOS-arm64-libs-v4-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-libs-v4-
 
       - name: Qt cache (restore)
         uses: actions/cache/restore@v4
@@ -869,8 +870,8 @@ jobs:
             ~/TBuild/Libraries/[qQ]t[_-]*
             ~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-qt-v3-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-qt-v3-
+          key: macOS-arm64-qt-v4-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-qt-v4-
 
       - name: Build libraries
         run: |
@@ -879,15 +880,35 @@ jobs:
 
       - name: Free disk space before caching
         run: |
-          if [ -d "$HOME/TBuild/Libraries" ]; then
-            # 1. Strip all .git folders inside Libraries to reclaim ~10 GB
-            find "$HOME/TBuild/Libraries" -type d -name ".git" -prune -exec rm -rf {} + 2>/dev/null || true
+          python3 -c "
+          import os, sys, shutil, pathlib
 
-            # 2. Delete intermediate compilation object files (*.o, *.obj)
-            # This safely frees ~25 GB without touching executables (moc, rcc, uic, qmake),
-            # libraries (*.a, *.dylib), headers, or configs.
-            find "$HOME/TBuild/Libraries" -type f \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
-          fi
+          libs = pathlib.Path(os.path.expanduser('~/TBuild/Libraries'))
+          if libs.is_dir():
+              print('Cleaning intermediate build files from Libraries...')
+              # 1. Strip all .git folders inside Libraries to reclaim ~10 GB
+              for git_dir in list(libs.rglob('.git')):
+                  if git_dir.is_dir():
+                      shutil.rmtree(git_dir, ignore_errors=True)
+
+              # 2. Clean intermediate object files (*.o, *.obj) from source/build trees only.
+              # CRITICAL: Exclude 'local' (installation prefix) and any 'objects-*' directories!
+              # Qt static plugins are CMake OBJECT libraries whose .o files (e.g.
+              # plugins/permissions/objects-Debug/QDarwinBluetoothPermissionPlugin_init/*.cpp.o)
+              # are imported targets referenced directly by Qt6*Targets.cmake.
+              deleted = 0
+              for p in list(libs.rglob('*')):
+                  if p.is_file() and p.suffix in ('.o', '.obj'):
+                      parts = p.parts
+                      if 'local' in parts or any(part.startswith('objects-') for part in parts):
+                          continue
+                      try:
+                          p.unlink()
+                          deleted += 1
+                      except OSError:
+                          pass
+              print(f'Safely deleted {deleted} intermediate object files outside local/ and objects-*')
+          "
           df -h
 
       - name: Save Libraries cache
@@ -938,6 +959,7 @@ jobs:
               break
             fi
           done
+          [ -d "pkg/AyuGram.app" ] || { echo "::error::Neither AyuGram.app nor Telegram.app found in $OUT"; exit 1; }
           [ -f "$OUT/Updater" ] && cp "$OUT/Updater" pkg/ || true
 
           # Create zip preserving symlinks & executable permissions
@@ -974,14 +996,17 @@ jobs:
         id: info
         run: |
           set -e
-          ZIP_NAME=$(ls release/AyuGram-*.zip 2>/dev/null | head -1 | xargs -n1 basename || true)
-          if [ -z "$ZIP_NAME" ]; then
-            echo "::error::No release zip artifacts found"
-            exit 1
+          VERSION="${{ needs.linux.outputs.version || needs.windows_x64.outputs.version || needs.macos.outputs.version || needs.windows_x86.outputs.version || '' }}"
+          VERSION_NUM="${{ needs.linux.outputs.version_num || needs.windows_x64.outputs.version_num || needs.macos.outputs.version_num || needs.windows_x86.outputs.version_num || '' }}"
+          if [ -z "$VERSION" ]; then
+            ZIP_NAME=$(ls release/AyuGram-*.zip 2>/dev/null | head -1 | xargs -n1 basename || true)
+            if [ -z "$ZIP_NAME" ]; then
+              echo "::error::No release zip artifacts found"
+              exit 1
+            fi
+            VERSION=$(echo "$ZIP_NAME" | sed -r 's/AyuGram-.*-([0-9]+(\.[0-9]+)+)\.zip/\1/')
+            VERSION_NUM=$(echo "$VERSION" | awk -F. '{ printf("%d%03d%03d", $1, $2, $3) }')
           fi
-          # Extract version like 7.2.9 from AyuGram-Windows-x64-7.2.9.zip
-          VERSION=$(echo "$ZIP_NAME" | sed -r 's/AyuGram-[A-Za-z0-9_-]+-([0-9]+\.[0-9]+(\.[0-9]+)?)\.zip/\1/')
-          VERSION_NUM=$(echo "$VERSION" | awk -F. '{ printf("%d%03d%03d", $1, $2, $3) }')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION ($VERSION_NUM)"
@@ -990,7 +1015,7 @@ jobs:
         id: tag
         env:
           VERSION: ${{ steps.info.outputs.version }}
-          UPSTREAM_SHA: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha }}
+          UPSTREAM_SHA: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha || needs.windows_x86.outputs.upstream_sha }}
         run: |
           set -e
           SHORTSHA="${UPSTREAM_SHA:0:7}"
@@ -1025,7 +1050,7 @@ jobs:
             | Linux    | x64 (64-bit) | zip / tar.gz   | `AyuGram-Linux-x64-${{ steps.info.outputs.version }}.zip` |
             | macOS    | Universal (Apple Silicon & Intel) | zip (.app bundle) | `AyuGram-macOS-${{ steps.info.outputs.version }}.zip` |
 
-            Upstream commit: ${{ needs.linux.outputs.upstream_sha || inputs.commit || '(branch tip)' }}
+            Upstream commit: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha || needs.windows_x86.outputs.upstream_sha || inputs.commit || '(branch tip)' }}
             Upstream branch: `${{ inputs.branch || 'dev' }}`
             LTO: ${{ env.DESKTOP_APP_ENABLE_LTO }}
 
