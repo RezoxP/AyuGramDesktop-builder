@@ -121,6 +121,7 @@ jobs:
 
           git config --global user.email "AyuGramBuilder@users.noreply.github.com"
           git config --global user.name "AyuGram CI"
+          git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
 
       - name: Create TBuild symlink
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
@@ -395,6 +396,7 @@ jobs:
 
           git config --global user.email "AyuGramBuilder@users.noreply.github.com"
           git config --global user.name "AyuGram CI"
+          git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
 
       - name: Create TBuild symlink
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
@@ -783,6 +785,12 @@ jobs:
       - name: Install dependencies via Homebrew
         run: |
           brew install git automake libtool cmake wget pkg-config gnu-tar ninja nasm meson
+
+      - name: Configure Git & mirrors
+        run: |
+          git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 30
 
       - name: Setup Python
         uses: actions/setup-python@v5

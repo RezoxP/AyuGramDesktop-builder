@@ -408,6 +408,31 @@ def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
     res.ok(fid, TARGET_UPDATER, "patched macOS updater to dynamically resolve AyuGram.app bundle")
 
 
+def patch_prepare_dav1d_mirror(root: Path, res: PatchResult, dry: bool):
+    fid = "dav1d-mirror"
+    path = root / TARGET_PREPARE
+    if not path.exists():
+        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
+        return
+
+    content, is_crlf = read_file(path)
+    old = "https://code.videolan.org/videolan/dav1d.git"
+    new = "https://github.com/videolan/dav1d.git"
+
+    if new in content:
+        res.ok(fid, TARGET_PREPARE, "already using GitHub mirror for dav1d")
+        return
+
+    if old not in content:
+        res.warn(fid, TARGET_PREPARE, f"anchor '{old}' not found")
+        return
+
+    if not dry:
+        content = content.replace(old, new)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_PREPARE, "mirrored dav1d to GitHub (fixes code.videolan.org DNS/uptime failures)")
+
+
 def patch_prepare_tg_owt(root: Path, res: PatchResult, dry: bool):
     fid = "tg-owt-win-syntax"
     path = root / TARGET_PREPARE
@@ -592,6 +617,7 @@ def main() -> int:
     patch_prefix_override(root, res, args.check)
     patch_manifest_url(root, res, args.check)
     patch_zip_updates(root, res, args.check)
+    patch_prepare_dav1d_mirror(root, res, args.check)
 
     # 2. macOS specific patches
     if args.platform in ("macos", "all"):
