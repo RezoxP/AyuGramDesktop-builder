@@ -122,6 +122,8 @@ jobs:
           git config --global user.email "AyuGramBuilder@users.noreply.github.com"
           git config --global user.name "AyuGram CI"
           git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
+          git config --global url."https://github.com/google/breakpad".insteadOf "https://chromium.googlesource.com/breakpad/breakpad"
+          git config --global http.postBuffer 524288000
 
       - name: Create TBuild symlink
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
@@ -397,6 +399,8 @@ jobs:
           git config --global user.email "AyuGramBuilder@users.noreply.github.com"
           git config --global user.name "AyuGram CI"
           git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
+          git config --global url."https://github.com/google/breakpad".insteadOf "https://chromium.googlesource.com/breakpad/breakpad"
+          git config --global http.postBuffer 524288000
 
       - name: Create TBuild symlink
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
@@ -789,8 +793,10 @@ jobs:
       - name: Configure Git & mirrors
         run: |
           git config --global url."https://github.com/videolan/dav1d".insteadOf "https://code.videolan.org/videolan/dav1d"
+          git config --global url."https://github.com/google/breakpad".insteadOf "https://chromium.googlesource.com/breakpad/breakpad"
+          git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 30
+          git config --global http.lowSpeedTime 180
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -1079,19 +1085,50 @@ jobs:
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           mkdir -p manifest-repo
 
-          # Dynamically construct manifest
+          # Dynamically construct manifest, preserving unbuilt platform entries
           python3 -c "
-          import json, os
+          import json, os, urllib.request
+          from pathlib import Path
+
           base = os.environ['BASE']
           v = os.environ['VERSION']
           vnum = os.environ['VERSION_NUM']
-          m = {
-              'win64': { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x64-{v}.zip' } },
-              'win':   { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x86-{v}.zip' } },
-              'mac':   { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } },
-              'armac': { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } },
-              'linux': { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Linux-x64-{v}.zip' } }
-          }
+          repo = os.environ['GITHUB_REPOSITORY']
+
+          # 1. Fetch current manifest to preserve existing platforms if only a subset was built
+          m = {}
+          try:
+              url = f'https://raw.githubusercontent.com/{repo}/update-manifest/current4'
+              req = urllib.request.Request(url, headers={'User-Agent': 'AyuGram-Builder'})
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  m = json.loads(resp.read().decode('utf-8'))
+              print('Loaded existing current4 manifest successfully.')
+          except Exception as e:
+              print(f'Starting fresh manifest: {e}')
+
+          # 2. Inspect available release artifacts and update only present platform packages
+          rel_dir = Path('release')
+
+          def has_file(pattern):
+              return bool(list(rel_dir.glob(pattern)))
+
+          if has_file('AyuGram-Windows-x64-*.zip'):
+              m['win64'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x64-{v}.zip' } }
+              print(f'Updated win64 -> {v}')
+
+          if has_file('AyuGram-Windows-x86-*.zip'):
+              m['win'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x86-{v}.zip' } }
+              print(f'Updated win -> {v}')
+
+          if has_file('AyuGram-macOS-*.zip'):
+              m['mac'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } }
+              m['armac'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } }
+              print(f'Updated mac & armac -> {v}')
+
+          if has_file('AyuGram-Linux-x64-*.zip'):
+              m['linux'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Linux-x64-{v}.zip' } }
+              print(f'Updated linux -> {v}')
+
           with open('manifest-repo/current4', 'w', encoding='utf-8') as f:
               json.dump(m, f, indent=2)
           "

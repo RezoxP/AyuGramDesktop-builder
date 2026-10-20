@@ -8,12 +8,13 @@ Applies:
 3. manifest-url     (critical): Allows absolute HTTP/HTTPS links in update manifest.
 4. zip-updates      (critical): Enables plain .zip update extraction via minizip, anti-bloat stale
                                 file purge, zip-slip protection, version/ready markers, and Unix permissions.
-5. mac-updater      (macOS):    Dynamically resolves AyuGram.app bundle in checkReadyUpdate instead of Telegram.app.
-6. tg-owt-win       (Windows):  Fixes upstream Windows cmd line continuation bug (\\ -> ^) in tg_owt stage.
-7. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
-8. qt-release-only  (Windows):  Builds Qt in release-only mode, halving Windows library build time.
-9. tlottie-rust     (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
-10. cmake-options   (Windows):  Disables debug scheme and enforces C++20.
+5. mirrors          (critical): Mirrors dav1d and breakpad to reliable GitHub repos to eliminate external DNS & 503 errors.
+6. mac-updater      (macOS):    Dynamically resolves AyuGram.app bundle in checkReadyUpdate instead of Telegram.app.
+7. tg-owt-win       (Windows):  Fixes upstream Windows cmd line continuation bug (\\ -> ^) in tg_owt stage.
+8. msys2-ucrt64     (Windows):  Migrates MSYS2 to UCRT64 toolchain and updates installer URL to 2026-09-27.
+9. qt-release-only  (Windows):  Builds Qt in release-only mode, halving Windows library build time.
+10. tlottie-rust    (Linux):    Resolves tlottie / tdesktop_rust consolidated library in Docker centos_env.
+11. cmake-options   (Windows):  Disables debug scheme and enforces C++20.
 """
 
 import argparse
@@ -433,6 +434,31 @@ def patch_prepare_dav1d_mirror(root: Path, res: PatchResult, dry: bool):
     res.ok(fid, TARGET_PREPARE, "mirrored dav1d to GitHub (fixes code.videolan.org DNS/uptime failures)")
 
 
+def patch_prepare_breakpad_mirror(root: Path, res: PatchResult, dry: bool):
+    fid = "breakpad-mirror"
+    path = root / TARGET_PREPARE
+    if not path.exists():
+        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
+        return
+
+    content, is_crlf = read_file(path)
+    old = "https://chromium.googlesource.com/breakpad/breakpad"
+    new = "https://github.com/google/breakpad.git"
+
+    if new in content:
+        res.ok(fid, TARGET_PREPARE, "already using GitHub mirror for breakpad")
+        return
+
+    if old not in content:
+        res.warn(fid, TARGET_PREPARE, f"anchor '{old}' not found")
+        return
+
+    if not dry:
+        content = content.replace(old, new)
+        write_file(path, content, is_crlf)
+    res.ok(fid, TARGET_PREPARE, "mirrored breakpad to GitHub (fixes chromium.googlesource.com 503/rate-limit failures)")
+
+
 def patch_prepare_tg_owt(root: Path, res: PatchResult, dry: bool):
     fid = "tg-owt-win-syntax"
     path = root / TARGET_PREPARE
@@ -618,6 +644,7 @@ def main() -> int:
     patch_manifest_url(root, res, args.check)
     patch_zip_updates(root, res, args.check)
     patch_prepare_dav1d_mirror(root, res, args.check)
+    patch_prepare_breakpad_mirror(root, res, args.check)
 
     # 2. macOS specific patches
     if args.platform in ("macos", "all"):
