@@ -11,8 +11,8 @@ name: Auto update
 
 on:
   schedule:
-    # Every 6 hours at minute 23
-    - cron: '23 */6 * * *'
+    # Every hour at minute 23
+    - cron: '23 * * * *'
   workflow_dispatch:
   push:
     branches:
@@ -123,5 +123,13 @@ jobs:
             echo "| Upstream Changelog Version | \`${{ steps.upstream.outputs.version }}\` (${{ steps.upstream.outputs.date }}) |"
             echo "| Current Released Version | \`${{ steps.last.outputs.version || '(none)' }}\` |"
             echo "| Active Builder Runs | ${{ steps.guard.outputs.busy || '0' }} |"
-            echo "| Outcome | ${{ steps.last.outputs.version != steps.upstream.outputs.version && steps.guard.outputs.busy == '0' && 'Dispatched new release build' || 'Up-to-date (no action needed)' }} |"
+            if [ "${{ steps.last.outputs.version != steps.upstream.outputs.version }}" = "true" ]; then
+              if [ "${{ steps.guard.outputs.busy || '0' }}" = "0" ]; then
+                echo "| Outcome | **Dispatched new release build** |"
+              else
+                echo "| Outcome | **New version detected — waiting for active build to finish** |"
+              fi
+            else
+              echo "| Outcome | Up-to-date (no action needed) |"
+            fi
           } >> $GITHUB_STEP_SUMMARY
