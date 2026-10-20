@@ -1042,11 +1042,36 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_ENV
 
-      - name: Generate Checksums
+      - name: Generate Checksums & Release Notes
+        env:
+          UPSTREAM_SHA: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha || needs.windows_x86.outputs.upstream_sha || inputs.commit || '(branch tip)' }}
+          BRANCH: ${{ inputs.branch || 'dev' }}
+          VERSION: ${{ steps.info.outputs.version }}
         run: |
           cd release
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+          {
+            echo "## AyuGram Desktop v${VERSION}"
+            echo ""
+            echo "| Package | Size | SHA-256 Checksum |"
+            echo "|---|---|---|"
+            for f in AyuGram-*.zip AyuGram-*.tar.gz; do
+              [ -f "$f" ] || continue
+              SIZE=$(ls -lh "$f" | awk '{ print $5 }')
+              SHA=$(grep "  $f\$" SHA256SUMS.txt | awk '{ print $1 }' || grep " $f\$" SHA256SUMS.txt | awk '{ print $1 }')
+              echo "| \`$f\` | $SIZE | \`$SHA\` |"
+            done
+            echo ""
+            echo "- **Upstream commit:** \`${UPSTREAM_SHA}\`"
+            echo "- **Upstream branch:** \`${BRANCH}\`"
+            echo "- **LTO:** \`${{ env.DESKTOP_APP_ENABLE_LTO }}\`"
+            echo ""
+            echo "*Verify package integrity using the attached \`SHA256SUMS.txt\`.*"
+          } > release_notes.md
+
+          cat release_notes.md >> $GITHUB_STEP_SUMMARY
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -1054,21 +1079,7 @@ jobs:
           tag_name: ${{ env.tag }}
           name: AyuGram v${{ steps.info.outputs.version }}
           make_latest: true
-          body: |
-            **AyuGram Desktop v${{ steps.info.outputs.version }}**
-
-            | Platform | Architecture | Package Format | File |
-            |----------|--------------|----------------|------|
-            | Windows  | x64 (64-bit) | zip            | `AyuGram-Windows-x64-${{ steps.info.outputs.version }}.zip` |
-            | Windows  | x86 (32-bit) | zip            | `AyuGram-Windows-x86-${{ steps.info.outputs.version }}.zip` |
-            | Linux    | x64 (64-bit) | zip / tar.gz   | `AyuGram-Linux-x64-${{ steps.info.outputs.version }}.zip` |
-            | macOS    | Universal (Apple Silicon & Intel) | zip (.app bundle) | `AyuGram-macOS-${{ steps.info.outputs.version }}.zip` |
-
-            Upstream commit: ${{ needs.linux.outputs.upstream_sha || needs.windows_x64.outputs.upstream_sha || needs.macos.outputs.upstream_sha || needs.windows_x86.outputs.upstream_sha || inputs.commit || '(branch tip)' }}
-            Upstream branch: `${{ inputs.branch || 'dev' }}`
-            LTO: ${{ env.DESKTOP_APP_ENABLE_LTO }}
-
-            *Verify file integrity with the attached `SHA256SUMS.txt`.*
+          body_path: release/release_notes.md
           files: release/*
           draft: false
           prerelease: false

@@ -11,8 +11,8 @@ name: Auto update
 
 on:
   schedule:
-    # Every hour at minute 23
-    - cron: '23 * * * *'
+    # Every 30 minutes (offset from the hour to avoid GitHub Actions scheduler spikes)
+    - cron: '12,42 * * * *'
   workflow_dispatch:
   push:
     branches:
