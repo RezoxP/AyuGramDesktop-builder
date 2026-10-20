@@ -409,54 +409,32 @@ def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
     res.ok(fid, TARGET_UPDATER, "patched macOS updater to dynamically resolve AyuGram.app bundle")
 
 
-def patch_prepare_dav1d_mirror(root: Path, res: PatchResult, dry: bool):
-    fid = "dav1d-mirror"
+GIT_MIRRORS = {
+    "https://code.videolan.org/videolan/dav1d.git": "https://github.com/videolan/dav1d.git",
+    "https://chromium.googlesource.com/breakpad/breakpad": "https://github.com/google/breakpad.git",
+}
+
+
+def patch_git_mirrors(root: Path, res: PatchResult, dry: bool):
+    fid = "git-mirrors"
     path = root / TARGET_PREPARE
     if not path.exists():
         res.warn(fid, TARGET_PREPARE, "prepare.py not found")
         return
 
     content, is_crlf = read_file(path)
-    old = "https://code.videolan.org/videolan/dav1d.git"
-    new = "https://github.com/videolan/dav1d.git"
+    replaced = []
+    for old, new in GIT_MIRRORS.items():
+        if old in content:
+            content = content.replace(old, new)
+            replaced.append(old.split("/")[-1].replace(".git", ""))
 
-    if new in content:
-        res.ok(fid, TARGET_PREPARE, "already using GitHub mirror for dav1d")
-        return
-
-    if old not in content:
-        res.warn(fid, TARGET_PREPARE, f"anchor '{old}' not found")
-        return
-
-    if not dry:
-        content = content.replace(old, new)
-        write_file(path, content, is_crlf)
-    res.ok(fid, TARGET_PREPARE, "mirrored dav1d to GitHub (fixes code.videolan.org DNS/uptime failures)")
-
-
-def patch_prepare_breakpad_mirror(root: Path, res: PatchResult, dry: bool):
-    fid = "breakpad-mirror"
-    path = root / TARGET_PREPARE
-    if not path.exists():
-        res.warn(fid, TARGET_PREPARE, "prepare.py not found")
-        return
-
-    content, is_crlf = read_file(path)
-    old = "https://chromium.googlesource.com/breakpad/breakpad"
-    new = "https://github.com/google/breakpad.git"
-
-    if new in content:
-        res.ok(fid, TARGET_PREPARE, "already using GitHub mirror for breakpad")
-        return
-
-    if old not in content:
-        res.warn(fid, TARGET_PREPARE, f"anchor '{old}' not found")
-        return
-
-    if not dry:
-        content = content.replace(old, new)
-        write_file(path, content, is_crlf)
-    res.ok(fid, TARGET_PREPARE, "mirrored breakpad to GitHub (fixes chromium.googlesource.com 503/rate-limit failures)")
+    if replaced:
+        if not dry:
+            write_file(path, content, is_crlf)
+        res.ok(fid, TARGET_PREPARE, f"mirrored {', '.join(replaced)} to reliable GitHub remotes")
+    else:
+        res.ok(fid, TARGET_PREPARE, "all git mirrors already applied or up to date")
 
 
 def patch_prepare_tg_owt(root: Path, res: PatchResult, dry: bool):
@@ -643,8 +621,7 @@ def main() -> int:
     patch_prefix_override(root, res, args.check)
     patch_manifest_url(root, res, args.check)
     patch_zip_updates(root, res, args.check)
-    patch_prepare_dav1d_mirror(root, res, args.check)
-    patch_prepare_breakpad_mirror(root, res, args.check)
+    patch_git_mirrors(root, res, args.check)
 
     # 2. macOS specific patches
     if args.platform in ("macos", "all"):
