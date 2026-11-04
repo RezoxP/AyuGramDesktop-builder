@@ -37,7 +37,7 @@ PLATFORM_FLAG = {
     "linux": "build_linux_x64",
 }
 
-DEFAULT_QUIET_MINUTES = 240
+DEFAULT_QUIET_MINUTES = 30
 
 
 def version_to_num(version: str) -> int:
@@ -196,7 +196,7 @@ def _selftest() -> int:
                         "mac": {"stable": {"released": "7000009"}},
                         "armac": {"stable": {"released": "7000009"}},
                         "linux": {"stable": {"released": "7002009"}}},
-              busy_count=0, minutes_since_last_build=30),
+              busy_count=0, minutes_since_last_build=15),
          "none", "quiet period"),
         ("mac stale, quiet period over -> retry mac only",
          dict(upstream_version="7.2.9", latest_release_version="7.2.9",
@@ -205,7 +205,7 @@ def _selftest() -> int:
                         "mac": {"stable": {"released": "7000009"}},
                         "armac": {"stable": {"released": "7000009"}},
                         "linux": {"stable": {"released": "7002009"}}},
-              busy_count=0, minutes_since_last_build=300),
+              busy_count=0, minutes_since_last_build=45),
          "retry", "build_macos"),
         ("multiple stale platforms -> retry both",
          dict(upstream_version="7.2.9", latest_release_version="7.2.9",

@@ -39,7 +39,7 @@ env:
   UPSTREAM_VERSION_FILE: https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/Telegram/build/version
   UPSTREAM_CHANGELOG: https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt
   MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/current4
-  QUIET_PERIOD_MINUTES: '240'
+  QUIET_PERIOD_MINUTES: '30'
 
 jobs:
   check:

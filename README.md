@@ -7,17 +7,17 @@ Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://
 ## Key Highlights
 
 - **Multi-Platform Support**:
-  - **Windows**: x64 and x86 (MSVC 2022 v143 toolset, `windows-2025` runner, Windows 7+ compatible).
+  - **Windows**: x64 and x86 (MSVC 2022 v143 toolset, `windows-2022` runner, Windows 7+ compatible).
   - **Linux**: x64 (glibc-compatible Docker `centos_env`).
-  - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64, `macos-15` runner).
+  - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64, `macos-latest` runner).
 - **Runner-Image & Actions Future-Proofing**:
-  - Pinned to modern, non-deprecated GitHub runner images (`windows-2025`, `ubuntu-24.04`, `macos-15`).
+  - Pinned to stable, reliable GitHub runner images (`windows-2022` with native VS 2022, `ubuntu-24.04`, `macos-latest`).
   - Visual Studio installation path dynamically resolved via `vswhere`, with toolset pinned to VS 2022 (`v143`) for maximum stability.
   - All GitHub Actions upgraded to the latest major runtimes (`checkout@v7`, `cache@v6`, `upload-artifact@v7`, `download-artifact@v8`, `setup-python@v7`).
 - **Fast, Cache-Optimized & Resumable Pipeline**:
   - **Windows**: Qt built in release-only mode, halving build time. Split restore/save cache logic saves caches with `!cancelled()`, so builds interrupted by timeouts or errors **resume** from the last completed stage instead of rebuilding from scratch.
   - **Linux**: Docker container with parallel build support (`--target Telegram`), multi-directory output discovery, and stripped binaries.
-  - **macOS**: Aggressive runner disk cleanup, cached `Libraries/` and Qt trees on Apple Silicon (`macos-15`), ad-hoc codesigning (`codesign --force --deep --sign -`), and Swift 6 compatibility guard (`DESKTOP_APP_DISABLE_SWIFT6=ON`).
+  - **macOS**: Aggressive runner disk cleanup, cached `Libraries/` and Qt trees on Apple Silicon (`macos-latest`), ad-hoc codesigning (`codesign --force --deep --sign -`), and Swift 6 compatibility guard (`DESKTOP_APP_DISABLE_SWIFT6=ON`).
 - **Network-Resilient Dependency Fetching**:
   - `dav1d` and `breakpad` mirrored to GitHub remotes (no DNS or 503 failures).
   - MSYS2 installer URL dynamically resolved with pinned fallback, pacman GPG SigLevel bypass for expired keyrings, and pinned NASM 2.16.03 to eliminate NASM 3.02 crashes in libvpx.
@@ -32,7 +32,7 @@ Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://
 - **Self-Healing Release Pipeline (`auto-update.yml`)**:
   - Monitors both `Telegram/build/version` and `changelog.txt` for upstream version bumps.
   - **Partial Releases**: Releases whatever platforms succeeded — a single platform failure never holds other artifacts hostage.
-  - **Self-Tested Decision Engine** (`.github/scripts/update_decision.py`): Retries only stale platforms after a 4-hour quiet period, preventing CI minute exhaustion.
+  - **Self-Tested Decision Engine** (`.github/scripts/update_decision.py`): Retries only stale platforms after a 30-minute quiet period, preventing CI minute exhaustion.
   - **Manifest Self-Healing**: Automatically repairs broken or missing manifests on subsequent runs.
 
 ---
@@ -76,7 +76,7 @@ Every 30 minutes it evaluates repository and upstream state via `.github/scripts
 | Decision | Trigger | Action |
 |---|---|---|
 | `full` | Upstream version > latest release version (or fresh repo) | Dispatch `build.yml` for **all** platforms |
-| `retry` | Latest release is current but manifest platform(s) are stale | Dispatch `build.yml` for **only stale platforms**, after a 4-hour quiet period |
+| `retry` | Latest release is current but manifest platform(s) are stale | Dispatch `build.yml` for **only stale platforms**, after a 30-minute quiet period |
 | `none` | Everything current, or a build is currently running/queued | Do nothing |
 
 #### Optional Configuration
