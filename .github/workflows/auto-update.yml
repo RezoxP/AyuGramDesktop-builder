@@ -27,6 +27,10 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: ayugram-auto-update
   cancel-in-progress: false
@@ -53,7 +57,7 @@ jobs:
       - name: Gather repository state
         id: state
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_TOKEN || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -e
           echo "Fetching upstream version file and changelog..."
@@ -163,7 +167,7 @@ jobs:
       - name: Dispatch build
         if: steps.decide.outputs.action != 'none'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_TOKEN || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           ACTION: ${{ steps.decide.outputs.action }}
           REASON: ${{ steps.decide.outputs.reason }}
         run: |

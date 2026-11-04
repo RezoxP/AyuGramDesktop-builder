@@ -83,6 +83,7 @@ Every 30 minutes it evaluates repository and upstream state via `.github/scripts
 
 | Variable / Secret | Purpose |
 |---|---|
+| `WORKFLOW_DISPATCH_TOKEN` / `GH_PAT` (secret) | Personal Access Token (classic `repo` / `workflow` scope) used by `auto-update.yml` to trigger `build.yml` if default repository permissions restrict `GITHUB_TOKEN`. |
 | `CPPGIR_MIRROR` (secret or variable) | Git URL of a mirror of `https://gitlab.com/mnauw/cppgir.git`, bypassing gitlab.com on Linux cloud runners. |
 | `TDESKTOP_API_ID` / `TDESKTOP_API_HASH` (secrets) | Custom Telegram API credentials (defaults to AyuGram public keys). |
 
