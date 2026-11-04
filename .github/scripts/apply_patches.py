@@ -61,16 +61,13 @@ UNIX_SYMLINK_INCLUDES = """\
 #endif // !Q_OS_WIN"""
 SENTINEL_MARKER = "RezoxP patch: plain-zip update support"
 
-FUNC_SIG_RE = re.compile(
-    r"bool\s+UnpackUpdate\s*\(\s*const\s+QString\s*&\s*filepath\s*\)\s*\{\s*(?:\r?\n\s*#ifndef\s+TDESKTOP_DISABLE_AUTOUPDATE)?"
+UNPACK_ANCHOR_RE = re.compile(
+    r"(bool\s+UnpackUpdate\s*\(\s*const\s+QString\s*&\s*filepath\s*\)\s*\{"
+    r"[\s\S]*?"
+    r"if\s*\(\s*filepath\.isEmpty\s*\(\s*\)\s*\)\s*\{\s*return\s+true\s*;\s*\})"
 )
 
-PATCH_BLOCK_TEMPLATE = '''bool UnpackUpdate(const QString &filepath) {
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
-\tif (filepath.isEmpty()) {
-\t\treturn true;
-\t}
-\t// === RezoxP patch: plain-zip update support ===
+ZIP_PATCH_BLOCK = '''\t// === RezoxP patch: plain-zip update support ===
 \t// If the downloaded file is a regular .zip (PK\\x03\\x04 magic), extract it
 \t// directly to tupdates/temp/ using minizip, write the version marker + ready
 \t// flag that checkReadyUpdate() expects, and skip the SHA1/RSA/LZMA path.
@@ -477,7 +474,7 @@ def patch_zip_updates(root: Path, res: PatchResult, dry: bool):
 
     content, is_crlf = read_file(path)
     newline = "\r\n" if is_crlf else "\n"
-    patch_block = PATCH_BLOCK_TEMPLATE.replace("\r\n", "\n").replace("\n", newline)
+    patch_block = ZIP_PATCH_BLOCK.replace("\r\n", "\n").replace("\n", newline)
 
     # 1. Ensure zlib_help.h and Unix symlink headers are included
     if SENTINEL_INCLUDE not in content:
@@ -490,16 +487,29 @@ def patch_zip_updates(root: Path, res: PatchResult, dry: bool):
         if insert_at is None:
             res.fail(fid, TARGET_UPDATER, "no #include line to anchor zlib_help.h")
             return
-        lines.insert(insert_at, f"{SENTINEL_INCLUDE}\n{UNIX_SYMLINK_INCLUDES}")
+        include_lines = [
+            SENTINEL_INCLUDE,
+            "#ifndef Q_OS_WIN",
+            "#include <unistd.h>",
+            "#include <sys/stat.h>",
+            "#endif // !Q_OS_WIN",
+        ]
+        lines[insert_at:insert_at] = include_lines
         content = newline.join(lines) + newline
 
-    # 2. Insert plain zip handler
+    # 2. Insert plain zip handler inside UnpackUpdate()
     if SENTINEL_MARKER not in content:
-        match = FUNC_SIG_RE.search(content)
+        match = UNPACK_ANCHOR_RE.search(content)
         if not match:
-            res.fail(fid, TARGET_UPDATER, f"UnpackUpdate() signature not found with regex: {FUNC_SIG_RE.pattern}")
+            res.fail(fid, TARGET_UPDATER, f"UnpackUpdate() anchor not found with regex: {UNPACK_ANCHOR_RE.pattern}")
             return
-        content = content[:match.start()] + patch_block + content[match.end():]
+        content = (
+            content[:match.end()]
+            + newline
+            + newline
+            + patch_block
+            + content[match.end():]
+        )
 
     if not dry:
         write_file(path, content, is_crlf)
