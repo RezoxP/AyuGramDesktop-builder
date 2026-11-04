@@ -1,7 +1,7 @@
 name: Build AyuGram Desktop
 
 # Builds AyuGram Desktop for Windows (x64 & x86), Linux (x64), and macOS.
-# Creates a GitHub Release with all platform artifacts and updates the auto-update manifest.
+# Creates a GitHub Release with available platform artifacts and updates the auto-update manifest.
 
 on:
   workflow_dispatch:
@@ -61,12 +61,12 @@ env:
 jobs:
 
   # ---------------------------------------------------------------------
-  # Windows x64 via MSVC on windows-2022
+  # Windows x64 via MSVC (v143 toolset, Windows 7 compatible) on windows-2025
   # ---------------------------------------------------------------------
   windows_x64:
     name: Windows x64
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows_x64 != false }}
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 360
 
     outputs:
@@ -80,7 +80,7 @@ jobs:
 
     steps:
       - name: Checkout builder repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Clean disk
         run: |
@@ -116,6 +116,18 @@ jobs:
           echo "COMMIT=$COMMIT" >> $GITHUB_ENV
           echo "LIBS_BASE=$GITHUB_WORKSPACE/TBuild/Libraries/win64" >> $GITHUB_ENV
 
+          # Resolve the VS 2022 installation path dynamically (vswhere) so the
+          # runner image layout can change without breaking gyp-based stages.
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          VS_PATH=""
+          if [ -x "$VSWHERE" ]; then
+            VS_PATH=$("$VSWHERE" -latest -version '[17.0,18.0)' -products '*' \
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+              -property installationPath 2>/dev/null || true)
+          fi
+          [ -n "$VS_PATH" ] || VS_PATH='C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+          echo "GYP_MSVS_OVERRIDE_PATH=$VS_PATH\\" >> $GITHUB_ENV
+
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
             "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake 2>/dev/null || true
 
@@ -129,7 +141,7 @@ jobs:
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -148,7 +160,9 @@ jobs:
             fi
           fi
 
-          git -C "$TBUILD/$REPO_NAME" submodule update --init --recursive --depth=1
+          # Non-recursive: cppgir is Linux-only and hosted on gitlab.com which
+          # intermittently answers 403 to cloud runners. Skip it on Windows.
+          git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
           UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -161,31 +175,46 @@ jobs:
             --platform windows \
             --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
 
-      - name: Read version & cache key
+      - name: Read version, detect SDK/toolset & cache key
         id: version
         shell: bash
         run: |
           set -e
           VFILE="$TBUILD/$REPO_NAME/Telegram/build/version"
-          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
-          SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1)
-          if [ -z "$SDK" ]; then SDK="10.0.26100.0"; fi
+          DOC_SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1 | tr -d '\r')
+          KITS_INC="/c/Program Files (x86)/Windows Kits/10/Include"
+          if [ -n "$DOC_SDK" ] && [ -d "$KITS_INC/$DOC_SDK" ]; then
+            SDK="$DOC_SDK"
+          elif [ -d "$KITS_INC" ]; then
+            SDK=$(ls -1 "$KITS_INC" | grep -E '^10\.0\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          else
+            SDK="${DOC_SDK:-10.0.26100.0}"
+          fi
           echo "SDK=$SDK" >> $GITHUB_ENV
-          echo "Using Windows SDK: $SDK"
+          echo "Using Windows SDK: $SDK (docs requested: ${DOC_SDK:-none})"
+
+          TOOLSET=""
+          if compgen -G "/c/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/14.44*" > /dev/null 2>&1; then
+            TOOLSET="14.44"
+          fi
+          echo "MSVC_TOOLSET=$TOOLSET" >> $GITHUB_ENV
+          echo "Using MSVC Toolset: ${TOOLSET:-default}"
 
           {
-            echo "v4-libs-x64"
+            echo "v5-libs-x64"
             cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
             cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
             echo "$SDK"
+            echo "$TOOLSET"
           } | sha256sum | awk '{ print $1 }' > CACHE_KEY.txt
           echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
 
@@ -194,22 +223,26 @@ jobs:
         with:
           arch: x64
           sdk: ${{ env.SDK }}
+          toolset: ${{ env.MSVC_TOOLSET }}
+          vsversion: '2022'
 
       - name: NuGet sources
         run: |
-          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages" & exit 0
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
       - name: ThirdParty cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-third-party
         with:
           path: ${{ env.TBUILD }}/ThirdParty
-          key: Windows-x64-third-party-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-third-party-v4-
+          key: Windows-x64-third-party-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x64-third-party-v5-
+            Windows-x64-third-party-v4-
 
       - name: Libraries cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-libs
         with:
           path: |
@@ -218,22 +251,41 @@ jobs:
             !${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/*
             !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x64-libs-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-libs-v4-
+          key: Windows-x64-libs-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x64-libs-v5-
+            Windows-x64-libs-v4-
 
       - name: Qt cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-qt
         with:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x64-qt-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x64-qt-v4-
+          key: Windows-x64-qt-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x64-qt-v5-
+            Windows-x64-qt-v4-
+
+      - name: Ensure stable NASM in cached MSYS2
+        shell: pwsh
+        run: |
+          $msysBin = "${env:TBUILD}\ThirdParty\msys64\ucrt64\bin"
+          if (Test-Path "$msysBin\nasm.exe") {
+            $ver = & "$msysBin\nasm.exe" -v 2>&1 | Out-String
+            if ($ver -match "3\.02") {
+              Write-Host "Replacing buggy NASM 3.02 in cached MSYS2 with NASM 2.16.03..."
+              Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip" -OutFile "$env:TEMP\nasm.zip"
+              Expand-Archive -Force "$env:TEMP\nasm.zip" "$env:TEMP\nasm_tmp"
+              Copy-Item -Force "$env:TEMP\nasm_tmp\nasm-2.16.03\nasm.exe" "$msysBin\nasm.exe"
+              Copy-Item -Force "$env:TEMP\nasm_tmp\nasm-2.16.03\ndisasm.exe" "$msysBin\ndisasm.exe"
+              Remove-Item -Recurse -Force "$env:TEMP\nasm.zip", "$env:TEMP\nasm_tmp"
+            }
+          }
 
       - name: Build libraries
         env:
-          GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
           GYP_MSVS_VERSION: 2022
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
@@ -252,6 +304,7 @@ jobs:
             "$(random_key)" > "$TBUILD/DesktopPrivate/alpha_private.h"
 
       - name: Free disk space
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           if [ -d "$LIBS_BASE" ]; then
@@ -272,16 +325,16 @@ jobs:
           fi
 
       - name: Save ThirdParty cache
-        if: steps.cache-third-party.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-third-party.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: ${{ env.TBUILD }}/ThirdParty
           key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
 
       - name: Save Libraries cache
-        if: steps.cache-libs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-libs.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -293,8 +346,8 @@ jobs:
           key: ${{ steps.cache-libs.outputs.cache-primary-key }}
 
       - name: Save Qt cache
-        if: steps.cache-qt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-qt.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -310,10 +363,11 @@ jobs:
             -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
             -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
             -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
             -D DESKTOP_APP_ENABLE_LTO=%DESKTOP_APP_ENABLE_LTO%
-          cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build ..\out --config Release --target Telegram --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package
         shell: bash
@@ -331,19 +385,19 @@ jobs:
           cd pkg && 7z a -mx9 "../AyuGram-Windows-x64-${VERSION}.zip" . > /dev/null
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AyuGram-Windows-x64-${{ env.VERSION }}
           path: "AyuGram-Windows-x64-${{ env.VERSION }}.zip"
           retention-days: 90
 
   # ---------------------------------------------------------------------
-  # Windows x86 via MSVC on windows-2022
+  # Windows x86 via MSVC (v143 toolset, Windows 7 compatible) on windows-2025
   # ---------------------------------------------------------------------
   windows_x86:
     name: Windows x86
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows_x86 != false }}
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 360
 
     outputs:
@@ -357,7 +411,7 @@ jobs:
 
     steps:
       - name: Checkout builder repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Clean disk
         run: |
@@ -393,6 +447,18 @@ jobs:
           echo "COMMIT=$COMMIT" >> $GITHUB_ENV
           echo "LIBS_BASE=$GITHUB_WORKSPACE/TBuild/Libraries" >> $GITHUB_ENV
 
+          # Resolve the VS 2022 installation path dynamically (vswhere) so the
+          # runner image layout can change without breaking gyp-based stages.
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          VS_PATH=""
+          if [ -x "$VSWHERE" ]; then
+            VS_PATH=$("$VSWHERE" -latest -version '[17.0,18.0)' -products '*' \
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+              -property installationPath 2>/dev/null || true)
+          fi
+          [ -n "$VS_PATH" ] || VS_PATH='C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+          echo "GYP_MSVS_OVERRIDE_PATH=$VS_PATH\\" >> $GITHUB_ENV
+
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' \
             "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake 2>/dev/null || true
 
@@ -406,7 +472,7 @@ jobs:
         run: mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -425,7 +491,9 @@ jobs:
             fi
           fi
 
-          git -C "$TBUILD/$REPO_NAME" submodule update --init --recursive --depth=1
+          # Non-recursive: cppgir is Linux-only and hosted on gitlab.com which
+          # intermittently answers 403 to cloud runners. Skip it on Windows.
+          git -C "$TBUILD/$REPO_NAME" submodule update --init --depth=1
           UPSTREAM_SHA=$(git -C "$TBUILD/$REPO_NAME" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -438,55 +506,75 @@ jobs:
             --platform windows \
             --manifest-url "https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/"
 
-      - name: Read version & cache key
+      - name: Read version, detect SDK/toolset & cache key
         id: version
         shell: bash
         run: |
           set -e
           VFILE="$TBUILD/$REPO_NAME/Telegram/build/version"
-          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
-          SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1)
-          if [ -z "$SDK" ]; then SDK="10.0.26100.0"; fi
+          DOC_SDK=$(grep "SDK version" "$DOCPATH" 2>/dev/null | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/' | head -1 | tr -d '\r')
+          KITS_INC="/c/Program Files (x86)/Windows Kits/10/Include"
+          if [ -n "$DOC_SDK" ] && [ -d "$KITS_INC/$DOC_SDK" ]; then
+            SDK="$DOC_SDK"
+          elif [ -d "$KITS_INC" ]; then
+            SDK=$(ls -1 "$KITS_INC" | grep -E '^10\.0\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          else
+            SDK="${DOC_SDK:-10.0.26100.0}"
+          fi
           echo "SDK=$SDK" >> $GITHUB_ENV
-          echo "Using Windows SDK: $SDK"
+          echo "Using Windows SDK: $SDK (docs requested: ${DOC_SDK:-none})"
+
+          TOOLSET=""
+          if compgen -G "/c/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/14.44*" > /dev/null 2>&1; then
+            TOOLSET="14.44"
+          fi
+          echo "MSVC_TOOLSET=$TOOLSET" >> $GITHUB_ENV
+          echo "Using MSVC Toolset: ${TOOLSET:-default}"
 
           {
-            echo "v4-libs-x86"
+            echo "v5-libs-x86"
             cat "$TBUILD/$REPO_NAME/Telegram/build/prepare/prepare.py"
             cat "$TBUILD/$REPO_NAME/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$TBUILD/$REPO_NAME/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
             echo "$SDK"
+            echo "$TOOLSET"
           } | sha256sum | awk '{ print $1 }' > CACHE_KEY.txt
           echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
 
-      - name: MSVC environment
+      - name: MSVC environment (64-bit host targeting x86)
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x86
+          arch: x64_x86
           sdk: ${{ env.SDK }}
+          toolset: ${{ env.MSVC_TOOLSET }}
+          vsversion: '2022'
 
       - name: NuGet sources
         run: |
-          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages" & exit 0
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
       - name: ThirdParty cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-third-party
         with:
           path: ${{ env.TBUILD }}/ThirdParty
-          key: Windows-x86-third-party-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-third-party-v4-
+          key: Windows-x86-third-party-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x86-third-party-v5-
+            Windows-x64-third-party-v5-
+            Windows-x86-third-party-v4-
 
       - name: Libraries cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-libs
         with:
           path: |
@@ -495,22 +583,41 @@ jobs:
             !${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/*
             !${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x86-libs-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-libs-v4-
+          key: Windows-x86-libs-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x86-libs-v5-
+            Windows-x86-libs-v4-
 
       - name: Qt cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-qt
         with:
           path: |
             ${{ env.LIBS_BASE }}/[qQ]t[_-]*
             ${{ env.LIBS_BASE }}/cache_keys/[qQ]t[_-]*
-          key: Windows-x86-qt-v4-${{ env.CACHE_KEY }}
-          restore-keys: Windows-x86-qt-v4-
+          key: Windows-x86-qt-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            Windows-x86-qt-v5-
+            Windows-x86-qt-v4-
+
+      - name: Ensure stable NASM in cached MSYS2
+        shell: pwsh
+        run: |
+          $msysBin = "${env:TBUILD}\ThirdParty\msys64\ucrt64\bin"
+          if (Test-Path "$msysBin\nasm.exe") {
+            $ver = & "$msysBin\nasm.exe" -v 2>&1 | Out-String
+            if ($ver -match "3\.02") {
+              Write-Host "Replacing buggy NASM 3.02 in cached MSYS2 with NASM 2.16.03..."
+              Invoke-WebRequest -Uri "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip" -OutFile "$env:TEMP\nasm.zip"
+              Expand-Archive -Force "$env:TEMP\nasm.zip" "$env:TEMP\nasm_tmp"
+              Copy-Item -Force "$env:TEMP\nasm_tmp\nasm-2.16.03\nasm.exe" "$msysBin\nasm.exe"
+              Copy-Item -Force "$env:TEMP\nasm_tmp\nasm-2.16.03\ndisasm.exe" "$msysBin\ndisasm.exe"
+              Remove-Item -Recurse -Force "$env:TEMP\nasm.zip", "$env:TEMP\nasm_tmp"
+            }
+          }
 
       - name: Build libraries
         env:
-          GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
           GYP_MSVS_VERSION: 2022
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
@@ -529,6 +636,7 @@ jobs:
             "$(random_key)" > "$TBUILD/DesktopPrivate/alpha_private.h"
 
       - name: Free disk space
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           if [ -d "$LIBS_BASE" ]; then
@@ -549,16 +657,16 @@ jobs:
           fi
 
       - name: Save ThirdParty cache
-        if: steps.cache-third-party.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-third-party.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: ${{ env.TBUILD }}/ThirdParty
           key: ${{ steps.cache-third-party.outputs.cache-primary-key }}
 
       - name: Save Libraries cache
-        if: steps.cache-libs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-libs.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -570,8 +678,8 @@ jobs:
           key: ${{ steps.cache-libs.outputs.cache-primary-key }}
 
       - name: Save Qt cache
-        if: steps.cache-qt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-qt.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -587,10 +695,11 @@ jobs:
             -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
             -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
             -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON ^
             -D DESKTOP_APP_ENABLE_LTO=%DESKTOP_APP_ENABLE_LTO%
-          cmake --build ..\out --config Release --parallel %NUMBER_OF_PROCESSORS%
+          cmake --build ..\out --config Release --target Telegram --parallel %NUMBER_OF_PROCESSORS%
 
       - name: Package
         shell: bash
@@ -608,7 +717,7 @@ jobs:
           cd pkg && 7z a -mx9 "../AyuGram-Windows-x86-${VERSION}.zip" . > /dev/null
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AyuGram-Windows-x86-${{ env.VERSION }}
           path: "AyuGram-Windows-x86-${{ env.VERSION }}.zip"
@@ -630,7 +739,7 @@ jobs:
 
     steps:
       - name: Checkout builder repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free disk space
         run: |
@@ -641,11 +750,16 @@ jobs:
           sudo docker image prune --all --force 2>/dev/null || true
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Clone AyuGramDesktop and pull Docker image
+        env:
+          # Optional GitHub mirror of https://gitlab.com/mnauw/cppgir.git —
+          # set it as a repository variable (or secret) to bypass gitlab.com,
+          # which intermittently answers 403 to cloud runners.
+          CPPGIR_MIRROR: ${{ vars.CPPGIR_MIRROR || secrets.CPPGIR_MIRROR || '' }}
         run: |
           set -e
           docker pull ghcr.io/telegramdesktop/tdesktop/centos_env:latest &
@@ -661,8 +775,28 @@ jobs:
             fi
           fi
 
-          git -C tdesktop submodule update --init --recursive --depth=1
-          git -C tdesktop/cmake submodule update --init --recursive --depth=1
+          git -C tdesktop submodule update --init --depth=1
+
+          # cppgir (nested inside the cmake submodule) is the only Linux build
+          # dependency hosted on gitlab.com, which intermittently answers 403
+          # to cloud runners — retry with backoff, and optionally redirect to a
+          # mirror via the CPPGIR_MIRROR repository variable/secret.
+          CPPGIR_MIRROR="${CPPGIR_MIRROR:-}"
+          if [ -n "$CPPGIR_MIRROR" ]; then
+            echo "Using cppgir mirror: $CPPGIR_MIRROR"
+            git config --global url."$CPPGIR_MIRROR".insteadOf https://gitlab.com/mnauw/cppgir.git
+          fi
+          for attempt in 1 2 3 4 5; do
+            if git -C tdesktop/cmake submodule update --init --recursive --depth=1; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::cppgir clone from gitlab.com failed after 5 attempts"
+              exit 1
+            fi
+            echo "cppgir clone failed (attempt $attempt/5) — retrying in $((attempt * 20))s..."
+            sleep $((attempt * 20))
+          done
           wait $DOCKER_PID
           echo "UPSTREAM_SHA=$(git -C tdesktop rev-parse HEAD)" >> $GITHUB_ENV
 
@@ -677,8 +811,8 @@ jobs:
         run: |
           set -e
           VFILE="tdesktop/Telegram/build/version"
-          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -700,8 +834,10 @@ jobs:
 
       - name: Enable parallel Docker build
         run: |
-          sed -i 's|cmake --build \.\./out|cmake --build ../out --parallel $(nproc)|' \
-            tdesktop/Telegram/build/docker/centos_env/build.sh
+          # Idempotent: skip if upstream already parallelizes the build.
+          grep -q -- '--parallel' tdesktop/Telegram/build/docker/centos_env/build.sh || \
+            sed -i 's|cmake --build \.\./out.*|cmake --build ../out --config "${CONFIG:-Release}" --target Telegram --parallel $(nproc)|' \
+              tdesktop/Telegram/build/docker/centos_env/build.sh
 
       - name: Build AyuGram
         run: |
@@ -711,10 +847,12 @@ jobs:
             -v "$PWD:/usr/src/tdesktop" \
             -v "$GITHUB_WORKSPACE/DesktopPrivate:/usr/src/DesktopPrivate" \
             -e CONFIG=Release \
+            -e CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
             ghcr.io/telegramdesktop/tdesktop/centos_env:latest \
             /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
+            -D CMAKE_BUILD_TYPE=Release \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
@@ -723,13 +861,28 @@ jobs:
       - name: Package
         run: |
           set -e
-          OUT="tdesktop/out/Release"
-          [ -d "$OUT" ] || { echo "::error::$OUT not found"; exit 1; }
+          OUT=""
+          for candidate in "tdesktop/out/Release" "tdesktop/out/bin" "tdesktop/out"; do
+            if [ -f "$candidate/AyuGram" ] || [ -f "$candidate/Telegram" ]; then
+              OUT="$candidate"
+              break
+            fi
+          done
+          if [ -z "$OUT" ]; then
+            echo "::error::Built AyuGram binary not found in tdesktop/out/{Release,bin,.}"
+            find tdesktop/out -maxdepth 3 2>/dev/null || true
+            exit 1
+          fi
           mkdir -p pkg
           for bin in AyuGram Telegram; do
             [ -f "$OUT/$bin" ] && cp "$OUT/$bin" pkg/AyuGram && break
           done
-          [ -f "$OUT/Updater" ] && cp "$OUT/Updater" pkg/ || true
+          for upd in "$OUT/Updater" "tdesktop/out/Release/Updater" "tdesktop/out/bin/Updater" "tdesktop/out/Updater"; do
+            if [ -f "$upd" ]; then
+              cp "$upd" pkg/Updater
+              break
+            fi
+          done
           strip --strip-all pkg/* 2>/dev/null || true
           chmod +x pkg/*
 
@@ -737,26 +890,26 @@ jobs:
           tar -czf "AyuGram-Linux-x64-${VERSION}.tar.gz" -C pkg .
 
       - name: Upload zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AyuGram-Linux-x64-${{ env.VERSION }}
           path: "AyuGram-Linux-x64-${{ env.VERSION }}.zip"
           retention-days: 90
 
       - name: Upload tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AyuGram-Linux-tar-${{ env.VERSION }}
           path: "AyuGram-Linux-x64-${{ env.VERSION }}.tar.gz"
           retention-days: 90
 
   # ---------------------------------------------------------------------
-  # macOS: Native Apple Silicon & Intel Universal binary on macos-14
+  # macOS: Native Apple Silicon & Intel Universal binary on macos-15
   # ---------------------------------------------------------------------
   macos:
     name: macOS (Universal)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos != false }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 360
 
     outputs:
@@ -766,10 +919,11 @@ jobs:
 
     steps:
       - name: Checkout builder repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free disk space
         run: |
+          sudo mdutil -a -i off 2>/dev/null || true
           sudo rm -rf /Library/Developer/CommandLineTools
           ACTIVE_XCODE=$(xcode-select -p | sed 's|/Contents/Developer||')
           for x in /Applications/Xcode_*.app; do
@@ -787,8 +941,14 @@ jobs:
           df -h
 
       - name: Install dependencies via Homebrew
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
         run: |
-          brew install git automake libtool cmake wget pkg-config gnu-tar ninja nasm meson
+          for pkg in git automake libtool cmake wget pkg-config gnu-tar ninja nasm meson; do
+            brew list --formula "$pkg" >/dev/null 2>&1 || brew install --formula "$pkg" || true
+          done
 
       - name: Configure Git & mirrors
         run: |
@@ -799,7 +959,7 @@ jobs:
           git config --global http.lowSpeedTime 180
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -808,7 +968,7 @@ jobs:
         run: |
           set -e
           BRANCH="${{ inputs.branch || 'dev' }}"
-          mkdir -p "$HOME/TBuild"
+          mkdir -p "$HOME/TBuild/ThirdParty" "$HOME/TBuild/Libraries"
           git clone --filter=blob:none --depth 1 --branch "$BRANCH" \
             "https://github.com/${{ env.AYUGRAM_REPO }}.git" "$HOME/TBuild/tdesktop"
 
@@ -818,8 +978,9 @@ jobs:
             fi
           fi
 
-          git -C "$HOME/TBuild/tdesktop" submodule update --init --recursive --depth=1
-          git -C "$HOME/TBuild/tdesktop/cmake" submodule update --init --recursive --depth=1
+          # Non-recursive: cppgir (nested under cmake/) is Linux-only and lives
+          # on gitlab.com which intermittently answers 403 to cloud runners. Skip it.
+          git -C "$HOME/TBuild/tdesktop" submodule update --init --depth=1
           UPSTREAM_SHA=$(git -C "$HOME/TBuild/tdesktop" rev-parse HEAD)
           echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> $GITHUB_ENV
           echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -835,15 +996,15 @@ jobs:
         run: |
           set -e
           VFILE="$HOME/TBuild/tdesktop/Telegram/build/version"
-          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }')
-          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }')
+          VERSION=$(grep 'AppVersionStr ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
+          VERSION_NUM=$(grep 'AppVersion ' "$VFILE" | awk '{ print $2 }' | tr -d '\r')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_num=$VERSION_NUM" >> $GITHUB_OUTPUT
 
           {
-            echo "macOS-libs-v4"
+            echo "macOS-libs-v5"
             cat "$HOME/TBuild/tdesktop/Telegram/build/prepare/prepare.py"
             cat "$HOME/TBuild/tdesktop/Telegram/build/qt_version.py" 2>/dev/null || true
             find "$HOME/TBuild/tdesktop/Telegram/build/prepare/patches" -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null || true
@@ -862,8 +1023,16 @@ jobs:
           printf 'static const char *AlphaPrivateKey = "%s";\n' \
             "$(random_key)" > "$HOME/TBuild/DesktopPrivate/alpha_private.h"
 
+      - name: ThirdParty cache (restore)
+        uses: actions/cache/restore@v6
+        id: cache-mac-third-party
+        with:
+          path: ~/TBuild/ThirdParty
+          key: macOS-arm64-third-party-v5-${{ env.CACHE_KEY }}
+          restore-keys: macOS-arm64-third-party-v5-
+
       - name: Libraries cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-mac-libs
         with:
           path: |
@@ -873,26 +1042,31 @@ jobs:
             !~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/*
             !~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-libs-v4-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-libs-v4-
+          key: macOS-arm64-libs-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            macOS-arm64-libs-v5-
+            macOS-arm64-libs-v4-
 
       - name: Qt cache (restore)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-mac-qt
         with:
           path: |
             ~/TBuild/Libraries/[qQ]t[_-]*
             ~/TBuild/Libraries/local/[qQ]t[_-]*
             ~/TBuild/Libraries/cache_keys/[qQ]t[_-]*
-          key: macOS-arm64-qt-v4-${{ env.CACHE_KEY }}
-          restore-keys: macOS-arm64-qt-v4-
+          key: macOS-arm64-qt-v5-${{ env.CACHE_KEY }}
+          restore-keys: |
+            macOS-arm64-qt-v5-
+            macOS-arm64-qt-v4-
 
       - name: Build libraries
         run: |
           cd "$HOME/TBuild"
-          ./tdesktop/Telegram/build/prepare/mac.sh
+          ./tdesktop/Telegram/build/prepare/mac.sh silent
 
       - name: Free disk space before caching
+        if: ${{ !cancelled() }}
         run: |
           python3 -c "
           import os, sys, shutil, pathlib
@@ -900,16 +1074,10 @@ jobs:
           libs = pathlib.Path(os.path.expanduser('~/TBuild/Libraries'))
           if libs.is_dir():
               print('Cleaning intermediate build files from Libraries...')
-              # 1. Strip all .git folders inside Libraries to reclaim ~10 GB
               for git_dir in list(libs.rglob('.git')):
                   if git_dir.is_dir():
                       shutil.rmtree(git_dir, ignore_errors=True)
 
-              # 2. Clean intermediate object files (*.o, *.obj) from source/build trees only.
-              # CRITICAL: Exclude 'local' (installation prefix) and any 'objects-*' directories!
-              # Qt static plugins are CMake OBJECT libraries whose .o files (e.g.
-              # plugins/permissions/objects-Debug/QDarwinBluetoothPermissionPlugin_init/*.cpp.o)
-              # are imported targets referenced directly by Qt6*Targets.cmake.
               deleted = 0
               for p in list(libs.rglob('*')):
                   if p.is_file() and p.suffix in ('.o', '.obj'):
@@ -925,9 +1093,17 @@ jobs:
           "
           df -h
 
+      - name: Save ThirdParty cache
+        if: ${{ !cancelled() && steps.cache-mac-third-party.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: ~/TBuild/ThirdParty
+          key: ${{ steps.cache-mac-third-party.outputs.cache-primary-key }}
+
       - name: Save Libraries cache
-        if: steps.cache-mac-libs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-mac-libs.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -940,8 +1116,8 @@ jobs:
           key: ${{ steps.cache-mac-libs.outputs.cache-primary-key }}
 
       - name: Save Qt cache
-        if: steps.cache-mac-qt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache-mac-qt.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
         continue-on-error: true
         with:
           path: |
@@ -957,10 +1133,11 @@ jobs:
             -D TDESKTOP_API_ID=${{ env.TDESKTOP_API_ID }} \
             -D TDESKTOP_API_HASH=${{ env.TDESKTOP_API_HASH }} \
             -D CMAKE_CONFIGURATION_TYPES=Release \
+            -D DESKTOP_APP_DISABLE_SWIFT6=ON \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
             -D DESKTOP_APP_ENABLE_LTO=${{ env.DESKTOP_APP_ENABLE_LTO }}
-          cmake --build ../out --config Release --parallel $(sysctl -n hw.ncpu)
+          cmake --build ../out --config Release --target Telegram --parallel $(sysctl -n hw.ncpu)
 
       - name: Package
         run: |
@@ -974,34 +1151,38 @@ jobs:
             fi
           done
           [ -d "pkg/AyuGram.app" ] || { echo "::error::Neither AyuGram.app nor Telegram.app found in $OUT"; exit 1; }
+          codesign --force --deep --sign - "pkg/AyuGram.app" 2>/dev/null || true
           [ -f "$OUT/Updater" ] && cp "$OUT/Updater" pkg/ || true
 
           # Create zip preserving symlinks & executable permissions
           (cd pkg && zip -r -y -9 "$GITHUB_WORKSPACE/AyuGram-macOS-${VERSION}.zip" .)
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AyuGram-macOS-${{ env.VERSION }}
           path: "AyuGram-macOS-${{ env.VERSION }}.zip"
           retention-days: 90
 
   # ---------------------------------------------------------------------
-  # Release: runs when enabled builds succeed
+  # Release: runs whenever any enabled build succeeds
   # ---------------------------------------------------------------------
   release:
     name: Create Release
     needs: [windows_x64, windows_x86, linux, macos]
-    if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (inputs.create_release != false) }}
+    # Release whatever platforms succeeded: a single failing platform must no
+    # longer hold the other artifacts hostage (the auto-updater retries stale
+    # platforms on later runs via targeted dispatches).
+    if: ${{ !cancelled() && contains(needs.*.result, 'success') && (inputs.create_release != false) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - name: Checkout builder repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release/
           merge-multiple: true
@@ -1123,25 +1304,31 @@ jobs:
           def has_file(pattern):
               return bool(list(rel_dir.glob(pattern)))
 
+          def make_entry(filename):
+              ch = { 'released': vnum, 'testing': vnum, 'link': f'{base}/{filename}' }
+              return { 'stable': ch, 'beta': ch }
+
           if has_file('AyuGram-Windows-x64-*.zip'):
-              m['win64'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x64-{v}.zip' } }
+              m['win64'] = make_entry(f'AyuGram-Windows-x64-{v}.zip')
               print(f'Updated win64 -> {v}')
 
           if has_file('AyuGram-Windows-x86-*.zip'):
-              m['win'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Windows-x86-{v}.zip' } }
+              m['win'] = make_entry(f'AyuGram-Windows-x86-{v}.zip')
               print(f'Updated win -> {v}')
 
           if has_file('AyuGram-macOS-*.zip'):
-              m['mac'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } }
-              m['armac'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-macOS-{v}.zip' } }
+              m['mac'] = make_entry(f'AyuGram-macOS-{v}.zip')
+              m['armac'] = make_entry(f'AyuGram-macOS-{v}.zip')
               print(f'Updated mac & armac -> {v}')
 
           if has_file('AyuGram-Linux-x64-*.zip'):
-              m['linux'] = { 'stable': { 'released': vnum, 'link': f'{base}/AyuGram-Linux-x64-{v}.zip' } }
+              m['linux'] = make_entry(f'AyuGram-Linux-x64-{v}.zip')
               print(f'Updated linux -> {v}')
 
-          with open('manifest-repo/current4', 'w', encoding='utf-8') as f:
-              json.dump(m, f, indent=2)
+          for fname in ('current', 'current2', 'current3', 'current4', 'current5'):
+              with open(f'manifest-repo/{fname}', 'w', encoding='utf-8') as f:
+                  json.dump(m, f, indent=2)
+                  f.write('\n')
           "
 
           python3 -m json.tool manifest-repo/current4 > /dev/null
@@ -1152,6 +1339,6 @@ jobs:
           git config user.email "AyuGramBuilder@users.noreply.github.com"
           git config user.name "AyuGram CI"
           git checkout --orphan update-manifest
-          git add current4
+          git add current current2 current3 current4 current5
           git commit -q -m "Update manifest for ${TAG}"
           git push -f origin update-manifest

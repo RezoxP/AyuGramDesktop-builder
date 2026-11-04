@@ -7,23 +7,33 @@ Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://
 ## Key Highlights
 
 - **Multi-Platform Support**:
-  - **Windows**: x64 and x86 (MSVC 2022).
+  - **Windows**: x64 and x86 (MSVC 2022 v143 toolset, `windows-2025` runner, Windows 7+ compatible).
   - **Linux**: x64 (glibc-compatible Docker `centos_env`).
-  - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64).
-- **Fast, Cache-Optimized Pipeline**:
-  - **Windows**: Builds Qt in release-only mode, halving library build times. Caches to the exact output directories (`Libraries/win64` and `Libraries`), with split restore/save so completed library stages are never discarded on compilation failure.
-  - **Linux**: Utilizes official prebuilt Docker environment with recursive submodule resolution and multi-threaded parallel compilation.
-  - **macOS**: Aggressive runner disk cleanup (recovering 25+ GB), cached `Libraries/` and Qt trees on Apple Silicon (`macos-14`), delivering swift subsequent compilation cycles without disk exhaustion.
-- **Robust & Future-Proof In-App Auto-Updates**:
-  - Zero-signature lock-in: Bypasses Telegram's proprietary RSA/SHA1 signature checks using embedded `minizip` plain `.zip` extraction.
-  - Anti-bloat protection: Purges stale update files and removes the downloaded archive immediately upon extraction.
-  - Dynamic macOS bundle resolution: Dynamically resolves `AyuGram.app` bundles in `checkReadyUpdate` instead of hardcoded paths.
-  - Automatic `0755` executable permissions for Linux binaries and macOS `.app` bundles upon update.
-  - Auto-updates point to this repository's `update-manifest` branch and automatically override legacy prefixes.
-- **Automated Upstream Watcher (`auto-update.yml`)**:
-  - Monitors `https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt`.
-  - Dispatches `build.yml` whenever upstream releases new version entries.
-  - Memory-safe streaming check with active run concurrency guards.
+  - **macOS**: Universal binary (Apple Silicon arm64 & Intel x86_64, `macos-15` runner).
+- **Runner-Image & Actions Future-Proofing**:
+  - Pinned to modern, non-deprecated GitHub runner images (`windows-2025`, `ubuntu-24.04`, `macos-15`).
+  - Visual Studio installation path dynamically resolved via `vswhere`, with toolset pinned to VS 2022 (`v143`) for maximum stability.
+  - All GitHub Actions upgraded to the latest major runtimes (`checkout@v7`, `cache@v6`, `upload-artifact@v7`, `download-artifact@v8`, `setup-python@v7`).
+- **Fast, Cache-Optimized & Resumable Pipeline**:
+  - **Windows**: Qt built in release-only mode, halving build time. Split restore/save cache logic saves caches with `!cancelled()`, so builds interrupted by timeouts or errors **resume** from the last completed stage instead of rebuilding from scratch.
+  - **Linux**: Docker container with parallel build support (`--target Telegram`), multi-directory output discovery, and stripped binaries.
+  - **macOS**: Aggressive runner disk cleanup, cached `Libraries/` and Qt trees on Apple Silicon (`macos-15`), ad-hoc codesigning (`codesign --force --deep --sign -`), and Swift 6 compatibility guard (`DESKTOP_APP_DISABLE_SWIFT6=ON`).
+- **Network-Resilient Dependency Fetching**:
+  - `dav1d` and `breakpad` mirrored to GitHub remotes (no DNS or 503 failures).
+  - MSYS2 installer URL dynamically resolved with pinned fallback, pacman GPG SigLevel bypass for expired keyrings, and pinned NASM 2.16.03 to eliminate NASM 3.02 crashes in libvpx.
+  - Linux `cppgir` submodule fetched with 5 retries and exponential backoff, with support for an optional `CPPGIR_MIRROR` secret/variable (never fetched on Windows or macOS).
+- **Bulletproof In-App Auto-Updates**:
+  - **HTTP 302 Redirect Handling**: Patches `HttpLoaderActor` to seamlessly handle GitHub Releases 302 redirects to AWS S3 without aborting.
+  - **Dynamic macOS App Bundle & Symlinks**: Restores Unix symlinks (`::symlink`) for macOS `.app` Frameworks and dynamically resolves `AyuGram.app` bundles.
+  - **Linux Binary Name Fix**: Corrects hardcoded `Telegram` references in `updater_linux.cpp` to `AyuGram`.
+  - **Anti-Virus Resilience**: Handles transient file locks on Windows temp `Updater.exe` without failing the update.
+  - **Locked Update Prefix**: Hard-locks `readAutoupdatePrefixRaw()` to prevent stale `tdata` from corrupting or hijacking the update URL.
+  - **Multi-Manifest Support**: Generates `current`, `current2`, `current3`, `current4`, and `current5` with both `stable` and `beta` channels.
+- **Self-Healing Release Pipeline (`auto-update.yml`)**:
+  - Monitors both `Telegram/build/version` and `changelog.txt` for upstream version bumps.
+  - **Partial Releases**: Releases whatever platforms succeeded — a single platform failure never holds other artifacts hostage.
+  - **Self-Tested Decision Engine** (`.github/scripts/update_decision.py`): Retries only stale platforms after a 4-hour quiet period, preventing CI minute exhaustion.
+  - **Manifest Self-Healing**: Automatically repairs broken or missing manifests on subsequent runs.
 
 ---
 
@@ -42,7 +52,7 @@ Triggered manually via **workflow_dispatch** or automatically by `auto-update.ym
 | `enable_lto` | `false` | Enable Link-Time Optimization (keep false for fast & stable CI) |
 | `create_release` | `true` | Create GitHub Release and push manifest to `update-manifest` |
 | `build_windows_x64` | `true` | Build Windows 64-bit |
-| `build_windows_x86` | `true` | Build Windows 32-bit |
+| `build_windows_x86` | `true` | Build Windows 32-bit (uses x64 host cross-compiler to prevent OOM) |
 | `build_linux_x64` | `true` | Build Linux 64-bit |
 | `build_macos` | `true` | Build macOS Universal (arm64 & x86_64) |
 
@@ -52,45 +62,60 @@ Triggered manually via **workflow_dispatch** or automatically by `auto-update.ym
 - `AyuGram-Windows-x86-{version}.zip`
 - `AyuGram-Linux-x64-{version}.zip` *(in-app updater compatible)*
 - `AyuGram-Linux-x64-{version}.tar.gz`
-- `AyuGram-macOS-{version}.zip` *(.app bundle)*
+- `AyuGram-macOS-{version}.zip` *(.app bundle with preserved symlinks & ad-hoc signature)*
 - `SHA256SUMS.txt`
 
 ---
 
-### 2. `auto-update.yml` — Automated Upstream Watcher
+### 2. `auto-update.yml` — Self-Healing Upstream Watcher
 
-Monitors `https://github.com/AyuGram/AyuGramDesktop.git` `dev` branch changelog releases.
+Monitors `https://github.com/AyuGram/AyuGramDesktop.git` `dev` branch changelog and version file.
 
-- Checks upstream `changelog.txt` for newly published releases.
-- Compares with the latest release tag in this repository.
-- If a new version is detected and no build is running, it dispatches `build.yml` with fast, stable compilation flags.
-- If a build fails, the release remains on the previous version, allowing the next run to automatically retry.
+Every 30 minutes it evaluates repository and upstream state via `.github/scripts/update_decision.py`:
+
+| Decision | Trigger | Action |
+|---|---|---|
+| `full` | Upstream version > latest release version (or fresh repo) | Dispatch `build.yml` for **all** platforms |
+| `retry` | Latest release is current but manifest platform(s) are stale | Dispatch `build.yml` for **only stale platforms**, after a 4-hour quiet period |
+| `none` | Everything current, or a build is currently running/queued | Do nothing |
+
+#### Optional Configuration
+
+| Variable / Secret | Purpose |
+|---|---|
+| `CPPGIR_MIRROR` (secret or variable) | Git URL of a mirror of `https://gitlab.com/mnauw/cppgir.git`, bypassing gitlab.com on Linux cloud runners. |
+| `TDESKTOP_API_ID` / `TDESKTOP_API_HASH` (secrets) | Custom Telegram API credentials (defaults to AyuGram public keys). |
 
 ---
 
 ## Auto-Update Mechanics
 
-The client polls the raw manifest:
+The client polls the manifest files in the `update-manifest` branch:
 ```
 https://raw.githubusercontent.com/<OWNER>/<REPO>/update-manifest/current4
 ```
 
-Example manifest structure:
+Example manifest structure (written to `current` through `current5` with `stable` and `beta` channels):
 ```json
 {
-  "win64": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
-  "win":   { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x86-7.2.9.zip" } },
-  "mac":   { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
-  "armac": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
-  "linux": { "stable": { "released": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Linux-x64-7.2.9.zip" } }
+  "win64": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
+  "win":   { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x86-7.2.9.zip" } },
+  "mac":   { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "armac": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "linux": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Linux-x64-7.2.9.zip" } }
 }
 ```
 
-When an update is detected, the client downloads the package directly from GitHub Releases and unpacks it via embedded minizip, writing the required `tupdates/temp/ready` flag and updating seamlessly upon next launch or restart.
+When an update is detected:
+1. Client downloads the zip directly from GitHub Releases, following HTTP 302 redirects without aborting.
+2. The zip is extracted via embedded minizip with Zip-Slip protection, Unix symlink restoration, and executable permission restoration.
+3. The exact version is extracted from the archive name and written to `tdata/version`.
+4. The downloaded zip is deleted immediately upon extraction (anti-bloat).
+5. Client transitions cleanly to `Ready` state and prompts for restart.
 
 ---
 
 ## Notes & Credentials
 
 - **API Credentials**: Public defaults `2040` / `b18441a1ff607e10a989891a5462e627`. To use custom API keys, configure repository secrets `TDESKTOP_API_ID` and `TDESKTOP_API_HASH`.
-- **First Build (Cold Cache)**: Cold cache builds take longer on Windows while building libraries. Subsequent builds hit the cache and complete in ~15-25 minutes.
+- **First Build (Cold Cache)**: Cold cache builds take longer while compiling libraries. Subsequent builds hit the cache and complete swiftly. If a build step is interrupted, completed stages are cached anyway so the next attempt **resumes** where it left off.

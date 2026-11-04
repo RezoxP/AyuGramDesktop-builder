@@ -1,135 +1,198 @@
 name: Auto update
 
-# Watches upstream AyuGram/AyuGramDesktop changelog and dispatches a full build
-# whenever a new version entry is published in changelog.txt.
+# Watches upstream AyuGram/AyuGramDesktop and keeps this repository's releases
+# and in-app update manifest (branch: update-manifest, files: current..current5) current.
+#
+# Decision logic lives in .github/scripts/update_decision.py (unit-tested via
+# --selftest) and implements three outcomes:
+#
+#   full  — a new upstream version was published in Telegram/build/version or changelog.txt:
+#           dispatch a full multi-platform build.
+#   retry — the latest version is already released but a manifest platform is
+#           stale (its build failed last time, or the manifest push was lost):
+#           dispatch a targeted rebuild of only the stale platforms, gated by a
+#           quiet period so a persistently failing platform cannot burn CI
+#           minutes in a tight loop.
+#   none  — everything is up to date, or a build is already running/queued.
 #
 # Design notes:
-#   * Updates are triggered based on changelog releases rather than raw commits,
-#     avoiding unnecessary builds on work-in-progress or non-release commits.
-#   * Automated builds use enable_lto=false for fast, stable, and memory-safe CI.
-#   * Concurrency group plus in-progress guard prevents duplicate runs.
+#   * Checks both Telegram/build/version and changelog.txt, choosing the highest
+#     semantic version so updates are never missed even if changelog lags behind.
+#   * Automated builds use enable_lto=false for fast, stable, memory-safe CI.
+#   * A failing platform never blocks the others: build.yml releases whatever
+#     succeeded and this workflow retries the stragglers automatically.
 
 on:
   schedule:
-    # Every 30 minutes (offset from the hour to avoid GitHub Actions scheduler spikes)
-    - cron: '12,42 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/auto-update.yml'
-      - '.github/workflows/build.yml'
-      - '.github/scripts/**'
-
-permissions:
-  contents: read
-  actions: write
 
 concurrency:
   group: ayugram-auto-update
   cancel-in-progress: false
 
+env:
+  UPSTREAM_VERSION_FILE: https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/Telegram/build/version
+  UPSTREAM_CHANGELOG: https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt
+  MANIFEST_URL: https://raw.githubusercontent.com/${{ github.repository }}/update-manifest/current4
+  QUIET_PERIOD_MINUTES: '240'
+
 jobs:
   check:
-    name: Check upstream changelog & dispatch build
+    name: Check upstream & dispatch build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
-      - name: Fetch and parse upstream changelog
-        id: upstream
+      - name: Checkout builder repo
+        uses: actions/checkout@v7
+
+      - name: Self-test decision engine
+        run: python3 .github/scripts/update_decision.py --selftest
+
+      - name: Gather repository state
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          CHANGELOG_URL="https://raw.githubusercontent.com/AyuGram/AyuGramDesktop/dev/changelog.txt"
-          echo "Fetching changelog from $CHANGELOG_URL..."
-          curl -fsSL "$CHANGELOG_URL" -o changelog.txt
+          echo "Fetching upstream version file and changelog..."
+          curl -fsSL --retry 3 --retry-delay 5 "$UPSTREAM_VERSION_FILE" -o version.txt || true
+          curl -fsSL --retry 3 --retry-delay 5 "$UPSTREAM_CHANGELOG" -o changelog.txt || true
 
-          python3 -c "
+          UPSTREAM_VERSION=$(python3 -c "
           import os, sys, re
 
-          with open('changelog.txt', 'r', encoding='utf-8', errors='ignore') as f:
-              content = f.read(65536)
+          ver_content = open('version.txt', 'r', encoding='utf-8', errors='ignore').read() if os.path.exists('version.txt') else ''
+          chg_content = open('changelog.txt', 'r', encoding='utf-8', errors='ignore').read(65536) if os.path.exists('changelog.txt') else ''
 
-          match = re.search(r'^([0-9]+(\.[0-9]+)+(\s+[a-z]+)?)\s*\(([^)]+)\)', content, re.MULTILINE)
-          if not match:
-              print('::error::Could not parse version from changelog.txt', file=sys.stderr)
+          def parse_ver(v):
+              clean = re.sub(r'[^0-9.]', '', v.strip().split()[0])
+              parts = [int(x) for x in clean.split('.') if x.isdigit()]
+              while len(parts) < 3:
+                  parts.append(0)
+              return tuple(parts)
+
+          candidates = []
+          m_vfile = re.search(r'^AppVersionStr\s+([0-9]+(?:\.[0-9]+)+)', ver_content, re.MULTILINE)
+          if m_vfile:
+              v_str = m_vfile.group(1).strip()
+              candidates.append((parse_ver(v_str), v_str))
+
+          m_chg = re.search(r'^([0-9]+(\.[0-9]+)+(\s+[a-z]+)?)\s*\(([^)]+)\)', chg_content, re.MULTILINE)
+          if m_chg:
+              c_str = m_chg.group(1).strip().split()[0]
+              candidates.append((parse_ver(c_str), c_str))
+
+          if not candidates:
+              print('::error::Could not parse version from Telegram/build/version or changelog.txt', file=sys.stderr)
               sys.exit(1)
 
-          full_ver = match.group(1).strip()
-          clean_ver = full_ver.split()[0]
-          date = match.group(4).strip()
+          candidates.sort(key=lambda item: item[0], reverse=True)
+          print(candidates[0][1])
+          ")
+          echo "Upstream detected version: $UPSTREAM_VERSION"
 
-          print(f'Detected changelog version: {clean_ver} ({date})')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
-              f.write(f'version={clean_ver}\n')
-              f.write(f'full_version={full_ver}\n')
-              f.write(f'date={date}\n')
-          "
-
-      - name: Read latest release in repository
-        id: last
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
           RELEASE_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name // ""' 2>/dev/null || true)
-          # Strip leading 'v'
-          RELEASE_VER=$(echo "$RELEASE_TAG" | sed 's/^v//' | cut -d'-' -f1)
-          echo "version=${RELEASE_VER:-}" >> $GITHUB_OUTPUT
-          if [ -n "$RELEASE_VER" ]; then
-            echo "Latest repository release: v$RELEASE_VER (tag: $RELEASE_TAG)"
+          RELEASE_VERSION=$(echo "$RELEASE_TAG" | sed 's/^v//' | cut -d'-' -f1)
+          echo "Latest released version: ${RELEASE_VERSION:-none}"
+
+          if curl -fsSL --retry 2 --retry-delay 5 "$MANIFEST_URL" -o manifest.json; then
+            python3 -m json.tool manifest.json > /dev/null 2>&1 || echo 'null' > manifest.json
           else
-            echo "No previous release found in repository — fresh repository."
+            echo 'null' > manifest.json
           fi
 
-      - name: Skip if a build is already running or queued
-        id: guard
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
           BUSY=$(gh run list -R "$GITHUB_REPOSITORY" --workflow=build.yml --json status --limit 30 \
-            | python3 -c "import json, sys; s = sys.stdin.read().strip() or '[]'; runs = json.loads(s); print(sum(1 for r in runs if r.get('status') in ('in_progress', 'queued')))")
-          echo "busy=$BUSY" >> $GITHUB_OUTPUT
+            | python3 -c "import json, sys; runs = json.loads(sys.stdin.read().strip() or '[]'); print(sum(1 for r in runs if r.get('status') in ('in_progress', 'queued')))")
           echo "Active build.yml runs: $BUSY"
 
-      - name: Dispatch build
-        if: steps.last.outputs.version != steps.upstream.outputs.version && steps.guard.outputs.busy == '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPSTREAM_VER: ${{ steps.upstream.outputs.version }}
+          LAST_RUN_AT=$(gh run list -R "$GITHUB_REPOSITORY" --workflow=build.yml --limit 1 --json updatedAt --jq '.[0].updatedAt // ""' 2>/dev/null || true)
+          MINUTES_SINCE=$(LAST_RUN_AT="$LAST_RUN_AT" python3 -c "
+          import os, sys
+          from datetime import datetime, timezone
+          last = os.environ.get('LAST_RUN_AT', '').strip()
+          if not last:
+              print('null'); sys.exit(0)
+          dt = datetime.fromisoformat(last.replace('Z', '+00:00'))
+          print(int((datetime.now(timezone.utc) - dt).total_seconds() // 60))
+          ")
+          echo "Minutes since last build run: ${MINUTES_SINCE:-never}"
+
+          python3 - "$UPSTREAM_VERSION" "$RELEASE_VERSION" "$BUSY" "$MINUTES_SINCE" <<'PYEOF' > state.json
+          import json, sys
+          upstream, release, busy, minutes = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          manifest = None
+          try:
+              manifest = json.load(open('manifest.json'))
+          except Exception:
+              manifest = None
+          state = {
+              'upstream_version': upstream,
+              'latest_release_version': release,
+              'manifest': manifest,
+              'busy_count': int(busy or 0),
+              'minutes_since_last_build': None if minutes in ('', 'null') else int(minutes),
+          }
+          json.dump(state, sys.stdout, indent=2)
+          PYEOF
+
+          cat state.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Decide
+        id: decide
         run: |
           set -e
-          echo "New changelog version detected: $UPSTREAM_VER (current released: ${{ steps.last.outputs.version || 'none' }})"
-          echo "Dispatching build.yml..."
+          python3 .github/scripts/update_decision.py \
+            --input state.json \
+            --quiet-period-minutes "$QUIET_PERIOD_MINUTES" > decision.json
+          cat decision.json
+          ACTION=$(python3 -c "import json; print(json.load(open('decision.json'))['action'])")
+          REASON=$(python3 -c "import json; print(json.load(open('decision.json'))['reason'])")
+          {
+            echo "action=$ACTION"
+            echo "reason=$REASON"
+          } >> "$GITHUB_OUTPUT"
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json
+          d = json.load(open('decision.json'))
+          for flag, enabled in sorted(d.get('platforms', {}).items()):
+              print(f'{flag}={"true" if enabled else "false"}')
+          PYEOF
+
+      - name: Dispatch build
+        if: steps.decide.outputs.action != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTION: ${{ steps.decide.outputs.action }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          set -e
+          ARGS=(-f branch=dev -f enable_lto=false -f create_release=true)
+          ARGS+=(
+            -f build_windows_x64=${{ steps.decide.outputs.build_windows_x64 }}
+            -f build_windows_x86=${{ steps.decide.outputs.build_windows_x86 }}
+            -f build_linux_x64=${{ steps.decide.outputs.build_linux_x64 }}
+            -f build_macos=${{ steps.decide.outputs.build_macos }}
+          )
+          echo "Dispatching build.yml ($ACTION): $REASON"
           gh workflow run build.yml \
             -R "$GITHUB_REPOSITORY" \
             --ref "${GITHUB_REF_NAME:-main}" \
-            -f branch=dev \
-            -f enable_lto=false \
-            -f create_release=true
-          echo "Dispatched build.yml successfully for changelog version $UPSTREAM_VER."
+            "${ARGS[@]}"
+          echo "Dispatched build.yml successfully."
 
       - name: Summary
         if: always()
         run: |
           {
-            echo "## Changelog-Based Auto-Update Check"
+            echo "## Auto-Update Check Summary"
             echo ""
             echo "| Parameter | Value |"
             echo "|---|---|"
-            echo "| Upstream Changelog Version | \`${{ steps.upstream.outputs.version }}\` (${{ steps.upstream.outputs.date }}) |"
-            echo "| Current Released Version | \`${{ steps.last.outputs.version || '(none)' }}\` |"
-            echo "| Active Builder Runs | ${{ steps.guard.outputs.busy || '0' }} |"
-            if [ "${{ steps.last.outputs.version != steps.upstream.outputs.version }}" = "true" ]; then
-              if [ "${{ steps.guard.outputs.busy || '0' }}" = "0" ]; then
-                echo "| Outcome | **Dispatched new release build** |"
-              else
-                echo "| Outcome | **New version detected — waiting for active build to finish** |"
-              fi
-            else
-              echo "| Outcome | Up-to-date (no action needed) |"
-            fi
-          } >> $GITHUB_STEP_SUMMARY
+            echo "| Decision | **${{ steps.decide.outputs.action }}** |"
+            echo "| Reason | ${{ steps.decide.outputs.reason }} |"
+            echo "| Upstream Version File | \`${UPSTREAM_VERSION_FILE}\` |"
+            echo "| Upstream Changelog | \`${UPSTREAM_CHANGELOG}\` |"
+            echo "| Update Manifest | \`${MANIFEST_URL}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
