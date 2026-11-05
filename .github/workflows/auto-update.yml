@@ -1,7 +1,7 @@
 name: Auto update
 
 # Watches upstream AyuGram/AyuGramDesktop and keeps this repository's releases
-# and in-app update manifest (branch: update-manifest, files: current..current5) current.
+# and in-app update manifest (branch: update-manifest, files: current..current9) current.
 #
 # Decision logic lives in .github/scripts/update_decision.py (unit-tested via
 # --selftest) and implements three outcomes:
@@ -101,9 +101,18 @@ jobs:
           RELEASE_VERSION=$(echo "$RELEASE_TAG" | sed 's/^v//' | cut -d'-' -f1)
           echo "Latest released version: ${RELEASE_VERSION:-none}"
 
-          if curl -fsSL --retry 2 --retry-delay 5 "$MANIFEST_URL" -o manifest.json; then
-            python3 -m json.tool manifest.json > /dev/null 2>&1 || echo 'null' > manifest.json
-          else
+          MANIFEST_FETCHED=0
+          for MANIFEST_CANDIDATE in "current6" "current4" "current"; do
+            CANDIDATE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/update-manifest/${MANIFEST_CANDIDATE}"
+            if curl -fsSL --retry 2 --retry-delay 3 "$CANDIDATE_URL" -o manifest.json 2>/dev/null; then
+              if python3 -m json.tool manifest.json > /dev/null 2>&1; then
+                echo "Successfully fetched manifest from $MANIFEST_CANDIDATE"
+                MANIFEST_FETCHED=1
+                break
+              fi
+            fi
+          done
+          if [ "$MANIFEST_FETCHED" -ne 1 ]; then
             echo 'null' > manifest.json
           fi
 

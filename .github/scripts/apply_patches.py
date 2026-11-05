@@ -46,7 +46,9 @@ TARGET_LOCALSTORAGE = "Telegram/SourceFiles/storage/localstorage.cpp"
 TARGET_APPLICATION = "Telegram/SourceFiles/core/application.cpp"
 TARGET_UPDATER_WIN = "Telegram/SourceFiles/_other/updater_win.cpp"
 TARGET_UPDATER_LINUX = "Telegram/SourceFiles/_other/updater_linux.cpp"
+TARGET_UPDATER_OSX = "Telegram/SourceFiles/_other/updater_osx.m"
 TARGET_SPECIFIC_LINUX = "Telegram/SourceFiles/platform/linux/specific_linux.cpp"
+TARGET_DEDICATED_LOADER_H = "Telegram/SourceFiles/mtproto/dedicated_file_loader.h"
 TARGET_PREPARE = "Telegram/build/prepare/prepare.py"
 TARGET_TELEGRAM_CMAKE = "Telegram/CMakeLists.txt"
 TARGET_TLOTTIE = "cmake/external/tlottie/CMakeLists.txt"
@@ -93,8 +95,9 @@ ZIP_PATCH_BLOCK = '''\t// === RezoxP patch: plain-zip update support ===
 \t\t\t\t\t\t}
 \t\t\t\t\t}
 \t\t\t\t}
+\t\t\t\tQFile::remove(readyFilePath);
 \t\t\t\tQDir(tempDirPath).removeRecursively();
-\t\t\t\tif (QDir(tempDirPath).exists() || QFile::exists(readyFilePath)) {
+\t\t\t\tif (QFile::exists(readyFilePath)) {
 \t\t\t\t\tLOG(("Update Error: plain-zip: failed to clear tupdates/temp"));
 \t\t\t\t\treturn false;
 \t\t\t\t}
@@ -108,6 +111,9 @@ ZIP_PATCH_BLOCK = '''\t// === RezoxP patch: plain-zip update support ===
 
 \t\t\t\t// Extract the zip into tempDirPath via minizip.
 \t\t\t\tunzFile uz = unzOpen64(QFile::encodeName(filepath).constData());
+\t\t\t\tif (!uz) {
+\t\t\t\t\tuz = unzOpen64(filepath.toUtf8().constData());
+\t\t\t\t}
 \t\t\t\tif (!uz) {
 \t\t\t\t\tLOG(("Update Error: plain-zip: unzOpen64 failed for '%1'").arg(filepath));
 \t\t\t\t\tcleanupOnFailure();
@@ -215,10 +221,13 @@ ZIP_PATCH_BLOCK = '''\t// === RezoxP patch: plain-zip update support ===
 #ifndef Q_OS_WIN
 \t\t\t\t\t// external_fa high 16 bits hold Unix st_mode; bit 0100 = S_IXUSR.
 \t\t\t\t\t// Ensure executables, bundles, and shared libraries are marked executable.
-\t\t\t\t\tif (((info.external_fa >> 16) & 0100)
+\t\t\t\t\tif (((info.external_fa >> 16) & 0111)
 \t\t\t\t\t\t|| relName == u"AyuGram"_q
 \t\t\t\t\t\t|| relName == u"Telegram"_q
 \t\t\t\t\t\t|| relName == u"Updater"_q
+\t\t\t\t\t\t|| relName.endsWith(u"/AyuGram"_q)
+\t\t\t\t\t\t|| relName.endsWith(u"/Telegram"_q)
+\t\t\t\t\t\t|| relName.endsWith(u"/Updater"_q)
 \t\t\t\t\t\t|| relName.contains(u"MacOS/AyuGram"_q)
 \t\t\t\t\t\t|| relName.contains(u"MacOS/Telegram"_q)
 \t\t\t\t\t\t|| relName.contains(u"Contents/Frameworks/Updater"_q)
@@ -343,6 +352,28 @@ def write_file(path: Path, content: str, is_crlf: bool, backup: bool = True):
             shutil.copy2(path, bak)
     newline = "\r\n" if is_crlf else "\n"
     path.write_text(content, encoding="utf-8", newline=newline)
+
+
+def patch_max_file_size(root: Path, res: PatchResult, dry: bool):
+    fid = "max-file-size"
+    path = root / TARGET_DEDICATED_LOADER_H
+    if not path.exists():
+        res.fail(fid, TARGET_DEDICATED_LOADER_H, "file not found")
+        return
+
+    content, is_crlf = read_file(path)
+    old = "static constexpr auto kMaxFileSize = 256 * 1024 * 1024;"
+    new = "static constexpr int64 kMaxFileSize = int64(2048) * 1024 * 1024;"
+    if new in content:
+        res.ok(fid, TARGET_DEDICATED_LOADER_H, "already raised kMaxFileSize limit to 2GB")
+        return
+    if old not in content:
+        res.fail(fid, TARGET_DEDICATED_LOADER_H, "kMaxFileSize anchor not found")
+        return
+
+    if not dry:
+        write_file(path, content.replace(old, new, 1), is_crlf)
+    res.ok(fid, TARGET_DEDICATED_LOADER_H, "raised dedicated loader kMaxFileSize from 256MB to 2GB")
 
 
 def patch_update_url(root: Path, manifest_url: str, res: PatchResult, dry: bool):
@@ -553,6 +584,37 @@ def patch_updater_network_and_files(root: Path, res: PatchResult, dry: bool):
         content = content.replace(old_part_status, new_part_status, 1)
         modified = True
 
+    # 1b. Support content-length as well as content-range in HttpLoaderActor::gotMetaData()
+    old_meta_loop = (
+        '\tfor (const auto &pair : pairs) {\n'
+        '\t\tif (QString::fromUtf8(pair.first).toLower() == "content-range") {\n'
+        '\t\t\tconst auto m = QRegularExpression(u"/(\\\\d+)([^\\\\d]|$)"_q).match(QString::fromUtf8(pair.second));\n'
+        '\t\t\tif (m.hasMatch()) {\n'
+        '\t\t\t\t_parent->writeChunk({}, m.captured(1).toLongLong());\n'
+        '\t\t\t}\n'
+        '\t\t}\n'
+        '\t}'
+    )
+    new_meta_loop = (
+        '\tfor (const auto &pair : pairs) {\n'
+        '\t\tconst auto name = QString::fromUtf8(pair.first).toLower();\n'
+        '\t\tif (name == "content-range") {\n'
+        '\t\t\tconst auto m = QRegularExpression(u"/(\\\\d+)([^\\\\d]|$)"_q).match(QString::fromUtf8(pair.second));\n'
+        '\t\t\tif (m.hasMatch()) {\n'
+        '\t\t\t\t_parent->writeChunk({}, m.captured(1).toLongLong());\n'
+        '\t\t\t}\n'
+        '\t\t} else if (name == "content-length") {\n'
+        '\t\t\tconst auto len = QString::fromUtf8(pair.second).toLongLong();\n'
+        '\t\t\tif (len > 0) {\n'
+        '\t\t\t\t_parent->writeChunk({}, _parent->alreadySize() + len);\n'
+        '\t\t\t}\n'
+        '\t\t}\n'
+        '\t}'
+    )
+    if old_meta_loop in content:
+        content = content.replace(old_meta_loop, new_meta_loop, 1)
+        modified = True
+
     # 2. Preserve '.' in ExtractFilename() so .zip extension is kept
     old_extract_re = 'QRegularExpression(u"[^a-zA-Z0-9_\\\\-]"_q)'
     new_extract_re = 'QRegularExpression(u"[^a-zA-Z0-9_\\\\-\\\\.]"_q)'
@@ -590,9 +652,145 @@ def patch_updater_network_and_files(root: Path, res: PatchResult, dry: bool):
         content = content.replace(old_win_del, new_win_del, 1)
         modified = True
 
+    # 5. Ensure intermediate dir exists before copying current updater in checkReadyUpdate()
+    old_chk_copy = (
+        "\tif (!updater.exists()) {\n"
+        "\t\tQFileInfo current(curUpdater);\n"
+        "\t\tif (!current.exists()) {\n"
+        "\t\t\tClearAll();\n"
+        "\t\t\treturn false;\n"
+        "\t\t}\n"
+        "\t\tif (!QFile(current.absoluteFilePath()).copy(updater.absoluteFilePath())) {"
+    )
+    new_chk_copy = (
+        "\tif (!updater.exists()) {\n"
+        "\t\tQFileInfo current(curUpdater);\n"
+        "\t\tif (!current.exists()) {\n"
+        "\t\t\tClearAll();\n"
+        "\t\t\treturn false;\n"
+        "\t\t}\n"
+        "\t\tQDir().mkpath(updater.absolutePath());\n"
+        "\t\tif (!QFile(current.absoluteFilePath()).copy(updater.absoluteFilePath())) {"
+    )
+    if old_chk_copy in content:
+        content = content.replace(old_chk_copy, new_chk_copy, 1)
+        modified = True
+
+    # 6. Fallback platform lookup in ParseCommonMap (e.g. winarm -> win64 -> win; mac <-> armac)
+    old_platform_lookup = (
+        "\tconst auto platforms = document.object();\n"
+        "\tconst auto platform = Platform::AutoUpdateKey();\n"
+        "\tconst auto it = platforms.constFind(platform);\n"
+        "\tif (it == platforms.constEnd()) {"
+    )
+    new_platform_lookup = (
+        "\tconst auto platforms = document.object();\n"
+        "\tauto platform = Platform::AutoUpdateKey();\n"
+        "\tauto it = platforms.constFind(platform);\n"
+        "\tif (it == platforms.constEnd()) {\n"
+        "\t\tif (platform == u\"winarm\"_q) {\n"
+        "\t\t\tit = platforms.constFind(u\"win64\"_q);\n"
+        "\t\t\tif (it == platforms.constEnd()) {\n"
+        "\t\t\t\tit = platforms.constFind(u\"win\"_q);\n"
+        "\t\t\t}\n"
+        "\t\t} else if (platform == u\"win64\"_q) {\n"
+        "\t\t\tit = platforms.constFind(u\"win\"_q);\n"
+        "\t\t} else if (platform == u\"armac\"_q) {\n"
+        "\t\t\tit = platforms.constFind(u\"mac\"_q);\n"
+        "\t\t} else if (platform == u\"mac\"_q) {\n"
+        "\t\t\tit = platforms.constFind(u\"armac\"_q);\n"
+        "\t\t}\n"
+        "\t}\n"
+        "\tif (it == platforms.constEnd()) {"
+    )
+    if old_platform_lookup in content:
+        content = content.replace(old_platform_lookup, new_platform_lookup, 1)
+        modified = True
+
+    # 7. Fallback to /current on 404/invalid version manifest in HttpChecker::gotResponse() and gotFailure()
+    old_got_response = (
+        "\tcSetLastUpdateCheck(base::unixtime::now());\n"
+        "\tconst auto response = _reply->readAll();\n"
+        "\tclearSentRequest();\n"
+        "\n"
+        "\tif (response.size() >= kMaxResponseSize || !handleResponse(response)) {"
+    )
+    new_got_response = (
+        "\tcSetLastUpdateCheck(base::unixtime::now());\n"
+        "\tconst auto statusCode = _reply ? _reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() : 0;\n"
+        "\tconst auto requestUrl = _reply ? _reply->url().toString() : QString();\n"
+        "\tconst auto response = _reply->readAll();\n"
+        "\tclearSentRequest();\n"
+        "\n"
+        "\tif (statusCode >= 400 || response.size() >= kMaxResponseSize || !handleResponse(response)) {\n"
+        "\t\tLOG((\"Update Error: Bad update map (status: %1, size: %2)\").arg(statusCode).arg(response.size()));\n"
+        "\t\tif (!requestUrl.isEmpty() && !requestUrl.endsWith(u\"/current\"_q)) {\n"
+        "\t\t\tLOG((\"Update Info: Falling back to universal /current manifest\"));\n"
+        "\t\t\tauto url = QUrl(Local::readAutoupdatePrefix() + u\"/current\"_q);\n"
+        "\t\t\tauto request = QNetworkRequest(url);\n"
+        "\t\t\trequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);\n"
+        "\t\t\t_manager = std::make_unique<QNetworkAccessManager>();\n"
+        "\t\t\t_reply = _manager->get(request);\n"
+        "\t\t\t_reply->connect(_reply, &QNetworkReply::finished, [=] {\n"
+        "\t\t\t\tgotResponse();\n"
+        "\t\t\t});\n"
+        "\t\t\t_reply->connect(_reply, &QNetworkReply::errorOccurred, [=](auto e) {\n"
+        "\t\t\t\tgotFailure(e);\n"
+        "\t\t\t});\n"
+        "\t\t\treturn;\n"
+        "\t\t}"
+    )
+    if old_got_response in content:
+        content = content.replace(old_got_response, new_got_response, 1)
+        modified = True
+
+    old_got_failure = (
+        "void HttpChecker::gotFailure(QNetworkReply::NetworkError e) {\n"
+        "\tLOG((\"Update Error: \"\n"
+        "\t\t\"could not get current version %1\").arg(e));\n"
+        "\tif (const auto reply = base::take(_reply)) {\n"
+        "\t\treply->deleteLater();\n"
+        "\t}\n"
+        "\n"
+        "\tfail();\n"
+        "}"
+    )
+    new_got_failure = (
+        "void HttpChecker::gotFailure(QNetworkReply::NetworkError e) {\n"
+        "\tLOG((\"Update Error: \"\n"
+        "\t\t\"could not get current version %1\").arg(e));\n"
+        "\tif (_reply) {\n"
+        "\t\tconst auto requestUrl = _reply->url().toString();\n"
+        "\t\tclearSentRequest();\n"
+        "\t\tif (!requestUrl.isEmpty() && !requestUrl.endsWith(u\"/current\"_q)) {\n"
+        "\t\t\tLOG((\"Update Info: Falling back to universal /current manifest on failure\"));\n"
+        "\t\t\tauto url = QUrl(Local::readAutoupdatePrefix() + u\"/current\"_q);\n"
+        "\t\t\tauto request = QNetworkRequest(url);\n"
+        "\t\t\trequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);\n"
+        "\t\t\t_manager = std::make_unique<QNetworkAccessManager>();\n"
+        "\t\t\t_reply = _manager->get(request);\n"
+        "\t\t\t_reply->connect(_reply, &QNetworkReply::finished, [=] {\n"
+        "\t\t\t\tgotResponse();\n"
+        "\t\t\t});\n"
+        "\t\t\t_reply->connect(_reply, &QNetworkReply::errorOccurred, [=](auto err) {\n"
+        "\t\t\t\tgotFailure(err);\n"
+        "\t\t\t});\n"
+        "\t\t\treturn;\n"
+        "\t\t}\n"
+        "\t} else {\n"
+        "\t\tclearSentRequest();\n"
+        "\t}\n"
+        "\n"
+        "\tfail();\n"
+        "}"
+    )
+    if old_got_failure in content:
+        content = content.replace(old_got_failure, new_got_failure, 1)
+        modified = True
+
     if modified and not dry:
         write_file(path, content, is_crlf)
-    res.ok(fid, TARGET_UPDATER, "3xx redirect guard, .zip filename preservation, FindUpdateFile & AV lock resilience")
+    res.ok(fid, TARGET_UPDATER, "fallback manifest /current, platform fallback, .zip filenames & 3xx redirect guards")
 
 
 def patch_platform_updaters(root: Path, res: PatchResult, dry: bool):
@@ -618,21 +816,29 @@ def patch_platform_updaters(root: Path, res: PatchResult, dry: bool):
     if win_path.exists():
         content, is_crlf = read_file(win_path)
         modified = False
-        old_win_self = (
+        old_win_block = (
             '\t\t\t\tif (equal(tofname, updaterName)) { // bad update - has Updater.exe - delete all dir\n'
             '\t\t\t\t\twriteLog(L"Error: bad update, has Updater.exe! \'" + tofname + L"\' equal \'" + updaterName + L"\'");\n'
             '\t\t\t\t\tdelFolder();\n'
             '\t\t\t\t\treturn false;\n'
+            '\t\t\t\t} else if (equal(tofname, updateTo + L"AyuGram.exe") && exeName != L"AyuGram.exe") {\n'
+            '\t\t\t\t\twstring fullBinaryPath = updateTo + exeName;\n'
+            '\t\t\t\t\twriteLog(L"Target binary found: \'" + tofname + L"\', changing to \'" + fullBinaryPath + L"\'");\n'
+            '\t\t\t\t\ttofname = fullBinaryPath;\n'
             '\t\t\t\t}'
         )
-        new_win_self = (
+        new_win_block = (
             '\t\t\t\tif (equal(tofname, updaterName)) {\n'
             '\t\t\t\t\twriteLog(L"Skipped running Updater.exe: \'" + tofname + L"\'");\n'
             '\t\t\t\t\tcontinue;\n'
+            '\t\t\t\t} else if ((equal(tofname, updateTo + L"AyuGram.exe") || equal(tofname, updateTo + L"Telegram.exe")) && exeName != L"AyuGram.exe") {\n'
+            '\t\t\t\t\twstring fullBinaryPath = updateTo + exeName;\n'
+            '\t\t\t\t\twriteLog(L"Target binary found: \'" + tofname + L"\', changing to \'" + fullBinaryPath + L"\'");\n'
+            '\t\t\t\t\ttofname = fullBinaryPath;\n'
             '\t\t\t\t}'
         )
-        if old_win_self in content:
-            content = content.replace(old_win_self, new_win_self, 1)
+        if old_win_block in content:
+            content = content.replace(old_win_block, new_win_block, 1)
             modified = True
         if 'if (installpath == mypath + L"\\\\" || true)' in content:
             content = content.replace(
@@ -657,27 +863,33 @@ def patch_platform_updaters(root: Path, res: PatchResult, dry: bool):
     if linux_path.exists():
         content, is_crlf = read_file(linux_path)
         modified = False
-        old_linux_self = (
+        old_linux_block = (
             '\t\t\t\t\tif (equal(tofname, updaterName)) { // bad update - has Updater - delete all dir\n'
             '\t\t\t\t\t\twriteLog("Error: bad update, has Updater! \'%s\' equal \'%s\'", tofname.c_str(), updaterName.c_str());\n'
             '\t\t\t\t\t\tdelFolder();\n'
             '\t\t\t\t\t\treturn false;\n'
+            '\t\t\t\t\t} else if (equal(tofname, exePath + "Telegram") && exeName != "Telegram") {\n'
+            '\t\t\t\t\t\tstring fullBinaryPath = exePath + exeName;\n'
+            '\t\t\t\t\t\twriteLog("Target binary found: \'%s\', changing to \'%s\'", tofname.c_str(), fullBinaryPath.c_str());\n'
+            '\t\t\t\t\t\ttofname = fullBinaryPath;\n'
             '\t\t\t\t\t}'
         )
-        new_linux_self = (
+        new_linux_block = (
             '\t\t\t\t\tif (equal(tofname, updaterName)) {\n'
             '\t\t\t\t\t\twriteLog("Skipped running Updater: \'%s\'", tofname.c_str());\n'
             '\t\t\t\t\t\tcontinue;\n'
+            '\t\t\t\t\t} else if ((equal(tofname, exePath + "AyuGram") || equal(tofname, exePath + "Telegram")) && exeName != "AyuGram" && exeName != "Telegram") {\n'
+            '\t\t\t\t\t\tstring fullBinaryPath = exePath + exeName;\n'
+            '\t\t\t\t\t\twriteLog("Target binary found: \'%s\', changing to \'%s\'", tofname.c_str(), fullBinaryPath.c_str());\n'
+            '\t\t\t\t\t\ttofname = fullBinaryPath;\n'
+            '\t\t\t\t\t} else if (equal(tofname, exePath + "Telegram") && exeName == "AyuGram") {\n'
+            '\t\t\t\t\t\tstring fullBinaryPath = exePath + "AyuGram";\n'
+            '\t\t\t\t\t\twriteLog("Target binary found: \'%s\', changing to \'%s\'", tofname.c_str(), fullBinaryPath.c_str());\n'
+            '\t\t\t\t\t\ttofname = fullBinaryPath;\n'
             '\t\t\t\t\t}'
         )
-        if old_linux_self in content:
-            content = content.replace(old_linux_self, new_linux_self, 1)
-            modified = True
-        if 'equal(tofname, exePath + "Telegram") && exeName != "Telegram"' in content:
-            content = content.replace(
-                'equal(tofname, exePath + "Telegram") && exeName != "Telegram"',
-                'equal(tofname, exePath + "AyuGram") && exeName != "AyuGram"',
-            )
+        if old_linux_block in content:
+            content = content.replace(old_linux_block, new_linux_block, 1)
             modified = True
         if '\texeName = "Telegram";' in content:
             content = content.replace('\texeName = "Telegram";', '\texeName = "AyuGram";')
@@ -722,6 +934,12 @@ def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
                 '\tQFileInfo updater(cWorkingDir() + u"tupdates/temp/"_q + appBundle + u"/Contents/Frameworks/Updater"_q);\n'
                 '\tif (!updater.exists()) {\n'
                 '\t\tupdater.setFile(cWorkingDir() + u"tupdates/temp/AyuGram.app/Contents/Frameworks/Updater"_q);\n'
+                '\t}\n'
+                '\tif (!updater.exists()) {\n'
+                '\t\tupdater.setFile(cWorkingDir() + u"tupdates/temp/Telegram.app/Contents/Frameworks/Updater"_q);\n'
+                '\t}\n'
+                '\tif (!updater.exists()) {\n'
+                '\t\tupdater.setFile(cWorkingDir() + u"tupdates/temp/Updater"_q);\n'
                 '\t}'
             )
             if old in content:
@@ -753,6 +971,67 @@ def patch_mac_updater(root: Path, res: PatchResult, dry: bool):
             res.ok("mac-xcode-icon", TARGET_TELEGRAM_CMAKE, "guarded folder.iconcomposer.icon behind Xcode >= 26.0")
         elif "XCODE_VERSION VERSION_GREATER_EQUAL 26.0" in c_content:
             res.ok("mac-xcode-icon", TARGET_TELEGRAM_CMAKE, "Xcode >= 26.0 icon guard already applied")
+
+    # Hardened updater_osx.m bundle resolution and non-fatal Updater copy
+    osx_path = root / TARGET_UPDATER_OSX
+    if osx_path.exists():
+        content_osx, crlf_osx = read_file(osx_path)
+        modified_osx = False
+        old_osx_copy = (
+            '\t\tif (![fileManager fileExistsAtPath:newVersionUpdaterPath]) {\n'
+            '\t\t\tif (![fileManager copyItemAtPath:oldVersionUpdaterPath toPath:newVersionUpdaterPath error:nil]) {\n'
+            '\t\t\t\twriteLog([[NSArray arrayWithObjects: @"Failed to copy file from ", oldVersionUpdaterPath, @" to ", newVersionUpdaterPath, nil] componentsJoinedByString:@""]);\n'
+            '\t\t\t\tdelFolder();\n'
+            '\t\t\t\treturn -1;\n'
+            '\t\t\t}\n'
+            '\t\t}'
+        )
+        new_osx_copy = (
+            '\t\tif (![fileManager fileExistsAtPath:newVersionUpdaterPath]) {\n'
+            '\t\t\t[fileManager createDirectoryAtPath:[newVersionUpdaterPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];\n'
+            '\t\t\tif ([fileManager fileExistsAtPath:oldVersionUpdaterPath]) {\n'
+            '\t\t\t\tif (![fileManager copyItemAtPath:oldVersionUpdaterPath toPath:newVersionUpdaterPath error:nil]) {\n'
+            '\t\t\t\t\twriteLog([[NSArray arrayWithObjects: @"Warning: Failed to copy file from ", oldVersionUpdaterPath, @" to ", newVersionUpdaterPath, nil] componentsJoinedByString:@""]);\n'
+            '\t\t\t\t}\n'
+            '\t\t\t}\n'
+            '\t\t}'
+        )
+        if old_osx_copy in content_osx:
+            content_osx = content_osx.replace(old_osx_copy, new_osx_copy, 1)
+            modified_osx = True
+
+        old_osx_bundle = (
+            '\t\t\tNSString *pathPart = [srcPath substringFromIndex:r.length];\n'
+            '\t\t\tr = [pathPart rangeOfString:appName];\n'
+            '\t\t\tif (r.location != 0) {\n'
+            '\t\t\t\twriteLog([@"Skipping not app file " stringByAppendingString:srcPath]);\n'
+            '\t\t\t\tcontinue;\n'
+            '\t\t\t}\n'
+            '\t\t\tNSString *dstPath = [appDirFull stringByAppendingString:[pathPart substringFromIndex:r.length]];'
+        )
+        new_osx_bundle = (
+            '\t\t\tNSString *pathPart = [srcPath substringFromIndex:r.length];\n'
+            '\t\t\tNSString *bundlePrefix = nil;\n'
+            '\t\t\tif ([pathPart hasPrefix:@"AyuGram.app"]) {\n'
+            '\t\t\t\tbundlePrefix = @"AyuGram.app";\n'
+            '\t\t\t} else if ([pathPart hasPrefix:@"Telegram.app"]) {\n'
+            '\t\t\t\tbundlePrefix = @"Telegram.app";\n'
+            '\t\t\t} else if ([pathPart hasPrefix:appName]) {\n'
+            '\t\t\t\tbundlePrefix = appName;\n'
+            '\t\t\t}\n'
+            '\t\t\tif (!bundlePrefix) {\n'
+            '\t\t\t\twriteLog([@"Skipping not app file " stringByAppendingString:srcPath]);\n'
+            '\t\t\t\tcontinue;\n'
+            '\t\t\t}\n'
+            '\t\t\tNSString *dstPath = [appDirFull stringByAppendingString:[pathPart substringFromIndex:[bundlePrefix length]]];'
+        )
+        if old_osx_bundle in content_osx:
+            content_osx = content_osx.replace(old_osx_bundle, new_osx_bundle, 1)
+            modified_osx = True
+
+        if modified_osx and not dry:
+            write_file(osx_path, content_osx, crlf_osx)
+        res.ok(fid, TARGET_UPDATER_OSX, "hardened macOS Updater binary copy & bundle prefix handling")
 
 
 GIT_MIRRORS = {
@@ -1091,6 +1370,7 @@ def main() -> int:
     print(f"Dry Run:       {args.check}\n")
 
     # 1. Critical common patches
+    patch_max_file_size(root, res, args.check)
     patch_update_url(root, manifest_url, res, args.check)
     patch_prefix_override(root, manifest_url, res, args.check)
     patch_manifest_url(root, res, args.check)

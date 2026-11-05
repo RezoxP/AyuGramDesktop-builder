@@ -23,12 +23,15 @@ Automated, fast, and multi-platform CI/CD builder for [AyuGram Desktop](https://
   - MSYS2 installer URL dynamically resolved with pinned fallback, pacman GPG SigLevel bypass for expired keyrings, and pinned NASM 2.16.03 to eliminate NASM 3.02 crashes in libvpx.
   - Linux `cppgir` submodule fetched with 5 retries and exponential backoff, with support for an optional `CPPGIR_MIRROR` secret/variable (never fetched on Windows or macOS).
 - **Bulletproof In-App Auto-Updates**:
-  - **HTTP 302 Redirect Handling**: Patches `HttpLoaderActor` to seamlessly handle GitHub Releases 302 redirects to AWS S3 without aborting.
+  - **Universal `/current` & `current1`..`current9` Manifests**: Clients on modern Linux (glibc >= 2.28), modern Windows, and macOS request `/current6` by default. Manifest publishing writes `current` and `current1` through `current9` covering all updater revisions with both `stable` and `beta` channels.
+  - **Client-Side Manifest Fallback**: If a version-specific manifest endpoint (e.g. `/current6`) returns 404 or fails, the client automatically falls back to universal `/current`.
+  - **2 GB Download Ceiling**: Bumps `AbstractDedicatedLoader::kMaxFileSize` from 256 MB to 2 GB, eliminating download aborts on large archives (such as macOS Universal release zips >= 270 MB).
+  - **Windows on ARM64 Support**: Publishes `"winarm"` mapped to Windows x64 binaries, with client platform fallback in `ParseCommonMap` (`winarm` -> `win64` -> `win`, `armac` <-> `mac`).
+  - **HTTP 302 Redirect & CDN Handling**: Patches `HttpLoaderActor` to seamlessly handle GitHub Releases 302 redirects to AWS S3 without aborting, inspecting both `Content-Range` and `Content-Length`.
+  - **Cross-Platform Rename Resilience**: Platform updaters (`updater_win.cpp`, `updater_linux.cpp`, `updater_osx.m`) safely skip running `Updater` executables without aborting, and seamlessly rename `AyuGram` and `Telegram` binary names.
   - **Dynamic macOS App Bundle & Symlinks**: Restores Unix symlinks (`::symlink`) for macOS `.app` Frameworks and dynamically resolves `AyuGram.app` bundles.
-  - **Linux Binary Name Fix**: Corrects hardcoded `Telegram` references in `updater_linux.cpp` to `AyuGram`.
-  - **Anti-Virus Resilience**: Handles transient file locks on Windows temp `Updater.exe` without failing the update.
+  - **Anti-Virus & Lock Resilience**: Handles transient file locks on Windows temp `Updater.exe` and `tupdates/temp` without failing the update.
   - **Locked Update Prefix**: Hard-locks `readAutoupdatePrefixRaw()` to prevent stale `tdata` from corrupting or hijacking the update URL.
-  - **Multi-Manifest Support**: Generates `current`, `current2`, `current3`, `current4`, and `current5` with both `stable` and `beta` channels.
 - **Self-Healing Release Pipeline (`auto-update.yml`)**:
   - Monitors both `Telegram/build/version` and `changelog.txt` for upstream version bumps.
   - **Partial Releases**: Releases whatever platforms succeeded — a single platform failure never holds other artifacts hostage.
@@ -93,17 +96,19 @@ Every 30 minutes it evaluates repository and upstream state via `.github/scripts
 
 The client polls the manifest files in the `update-manifest` branch:
 ```
-https://raw.githubusercontent.com/<OWNER>/<REPO>/update-manifest/current4
+https://raw.githubusercontent.com/<OWNER>/<REPO>/update-manifest/current6
 ```
+*(With universal fallback to `.../current`)*
 
-Example manifest structure (written to `current` through `current5` with `stable` and `beta` channels):
+Example manifest structure (written to `current` and `current1` through `current9` with `stable` and `beta` channels):
 ```json
 {
-  "win64": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
-  "win":   { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x86-7.2.9.zip" } },
-  "mac":   { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
-  "armac": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
-  "linux": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Linux-x64-7.2.9.zip" } }
+  "win64":  { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
+  "win":    { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x86-7.2.9.zip" } },
+  "winarm": { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip" } },
+  "mac":    { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "armac":  { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip" } },
+  "linux":  { "stable": { "released": "7002009", "testing": "7002009", "link": "https://github.com/OWNER/REPO/releases/download/v7.2.9/AyuGram-Linux-x64-7.2.9.zip" } }
 }
 ```
 
