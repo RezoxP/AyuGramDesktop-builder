@@ -58,5 +58,17 @@
       "testing": "7002009",
       "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.2.9/AyuGram-macOS-7.2.9.zip"
     }
+  },
+  "winarm": {
+    "stable": {
+      "released": "7002009",
+      "testing": "7002009",
+      "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip"
+    },
+    "beta": {
+      "released": "7002009",
+      "testing": "7002009",
+      "link": "https://github.com/RezoxP/AyuGramDesktop-builder/releases/download/v7.2.9/AyuGram-Windows-x64-7.2.9.zip"
+    }
   }
 }
