@@ -1274,9 +1274,10 @@ jobs:
           VERSION: ${{ steps.info.outputs.version }}
           VERSION_NUM: ${{ steps.info.outputs.version_num }}
           TAG: ${{ env.tag }}
+          BASE: https://github.com/${{ github.repository }}/releases/download/${{ env.tag }}
         run: |
           set -e
-          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          export BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           mkdir -p manifest-repo
 
           # Dynamically construct manifest, preserving unbuilt platform entries
@@ -1284,10 +1285,11 @@ jobs:
           import json, os, urllib.request
           from pathlib import Path
 
-          base = os.environ['BASE']
-          v = os.environ['VERSION']
-          vnum = os.environ['VERSION_NUM']
-          repo = os.environ['GITHUB_REPOSITORY']
+          repo = os.environ.get('GITHUB_REPOSITORY', '')
+          tag = os.environ.get('TAG', '')
+          v = os.environ.get('VERSION', '')
+          vnum = os.environ.get('VERSION_NUM', '')
+          base = os.environ.get('BASE') or f'https://github.com/{repo}/releases/download/{tag or (\'v\' + v)}'
 
           # 1. Fetch current manifest to preserve existing platforms if only a subset was built
           m = {}
